@@ -233,72 +233,92 @@ enum DeckActions {
 }
 
 
-// MARK: - Usage from the AI Usage app
+// MARK: - AI usage (fetched here, the same way AI Usage does; see UsageProviders.swift)
 
-/// AI Usage (local.aiusagebar) announces its numbers with distributed notifications:
-///   local.aiusagebar.usage    AI Usage → us   userInfo["json"] = {"providers":[…]}
-///   local.aiusagebar.request  us → AI Usage   "send me the current numbers"
-///   local.aiusagebar.refresh  us → AI Usage   "fetch now" (the board's refresh button)
-/// Without AI Usage running the board still works; the usage page just has no data.
+/// Fetches Claude and Antigravity usage for the board's "Uso" page: on connect, every 5 min
+/// and when the board's ↻ is pressed. Nothing is fetched while the board is disconnected.
+///   {"t":"usage","providers":[{"name","pct","err","busy","at","rows":[{"sec","label","pct","reset"}]}]}
 @MainActor
 final class UsageFeed {
-    static let appID = "local.aiusagebar"
-    static let usageName = Notification.Name("local.aiusagebar.usage")
-    static let requestName = Notification.Name("local.aiusagebar.request")
-    static let refreshName = Notification.Name("local.aiusagebar.refresh")
+    final class Entry {
+        let provider: UsageProvider
+        var rows: [UsageRow] = []
+        var error: String?
+        var updatedAt: Date?
+        var busy = false
+        init(_ p: UsageProvider) { provider = p }
+    }
 
-    private(set) var providers: [Any]?
+    static let interval: TimeInterval = 300
+
     var onChange: () -> Void = {}
+    private let entries = [Entry(ClaudeProvider()), Entry(AntigravityProvider())]
+    private var timer: Timer?
 
-    var isAppRunning: Bool {
-        !NSRunningApplication.runningApplications(withBundleIdentifier: Self.appID).isEmpty
-    }
-
-    func start() {
-        DistributedNotificationCenter.default().addObserver(
-            forName: Self.usageName, object: nil, queue: .main
-        ) { [weak self] n in
-            let json = n.userInfo?["json"] as? String
-            MainActor.assumeIsolated { self?.receive(json) }
+    func setActive(_ on: Bool) {
+        if on, timer == nil {
+            refresh()
+        } else if !on {
+            timer?.invalidate()
+            timer = nil
         }
-        post(Self.requestName)
     }
 
-    /// Asks AI Usage to fetch now, opening it first if it is closed (it fetches on launch).
     func refresh() {
-        if isAppRunning {
-            post(Self.refreshName)
-        } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.appID) {
-            NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+        timer?.invalidate()
+        let t = Timer(timeInterval: Self.interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
         }
-    }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
 
-    /// The board message for the current numbers, or nil before the first one arrives.
-    func boardMessage() -> [String: Any]? {
-        guard let providers else { return nil }
-        return ["t": "usage", "providers": Self.asciiDeep(providers)]
-    }
-
-    private func receive(_ json: String?) {
-        guard let data = json?.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let list = obj["providers"] as? [Any] else { return }
-        providers = list
-        onChange()
-    }
-
-    private func post(_ name: Notification.Name) {
-        DistributedNotificationCenter.default().postNotificationName(
-            name, object: nil, userInfo: nil, deliverImmediately: true)
-    }
-
-    private static func asciiDeep(_ v: Any) -> Any {
-        switch v {
-        case let s as String: return SerialLink.ascii(s)
-        case let a as [Any]: return a.map(asciiDeep)
-        case let d as [String: Any]: return d.mapValues(asciiDeep)
-        default: return v
+        for e in entries where !e.busy {
+            e.busy = true
+            Task {
+                do {
+                    e.rows = try await e.provider.fetch()
+                    e.updatedAt = Date()
+                    e.error = nil
+                } catch FetchError.notRunning {
+                    e.rows = []
+                    e.error = "Antigravity não está aberto"
+                } catch FetchError.expired {
+                    e.error = e.provider.expiredMessage
+                } catch FetchError.noCredentials {
+                    e.error = "Credenciais do Claude Code não encontradas"
+                } catch FetchError.http(let code) {
+                    e.error = "Erro HTTP \(code)"
+                } catch FetchError.network(let msg) {
+                    e.error = "Sem conexão: \(msg)"
+                } catch {
+                    e.error = "Resposta inesperada da API"
+                }
+                e.busy = false
+                self.onChange()
+            }
         }
+        onChange() // shows "Atualizando..." right away
+    }
+
+    func boardMessage() -> [String: Any] {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        let providers: [[String: Any]] = entries.map { e in
+            [
+                "name": e.provider.name,
+                "pct": e.provider.headline(e.rows).map { Int($0.rounded()) } ?? -1,
+                "err": SerialLink.ascii(e.error ?? ""),
+                "busy": e.busy,
+                "at": e.updatedAt.map { f.string(from: $0) } ?? "",
+                "rows": e.rows.map { r in [
+                    "sec": SerialLink.ascii(r.section ?? ""),
+                    "label": SerialLink.ascii(r.label),
+                    "pct": Int(r.usedPct.rounded()),
+                    "reset": SerialLink.ascii(shortReset(r.resetsAt)),
+                ] as [String: Any] },
+            ]
+        }
+        return ["t": "usage", "providers": providers]
     }
 }
 
@@ -324,7 +344,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.appearsDisabled = true
 
         usage.onChange = { [weak self] in self?.push(self?.usage.boardMessage()) }
-        usage.start()
         nowPlaying.onChange = { [weak self] in self?.push(self?.nowPlaying.message) }
         nowPlaying.onArt = { [weak self] in self?.push(self?.nowPlaying.artMessage) }
         nowPlaying.start()
@@ -364,6 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func linkChanged() {
         statusItem.button?.appearsDisabled = !device.isLinked
         mic.setActive(device.isLinked)
+        usage.setActive(device.isLinked)
         if !device.isLinked { pageChanged("") }
     }
 

@@ -4,7 +4,7 @@ App de barra de menus do macOS que conversa com a tela touch **Waveshare ESP32-S
 
 A tela tem seis páginas. Para trocar de página, use o seletor no topo ou deslize o dedo para o lado:
 
-- **Uso**: o uso do Claude e do Antigravity, recebido do app [AI Usage](../macos-mai-ai-usage-app). O botão ↻ pede uma atualização ao AI Usage e abre o app se ele estiver fechado.
+- **Uso**: o uso do Claude e do Antigravity. O Waveshare Link busca esses números sozinho, do mesmo jeito que o app [AI Usage](../macos-mai-ai-usage-app): ao conectar, a cada 5 min e no botão ↻. Os dois apps são independentes: o AI Usage mostra o uso na barra do topo, e o Waveshare Link manda para a placa.
 - **Tocando**: música, artista, álbum, capa e progresso do que toca no Music ou no Spotify, com Anterior, Play/Pausa e Próxima.
 - **Atalhos**: Captura (abre a barra do ⌘⇧5), Microfone (silencia o microfone padrão; fica vermelho quando mudo), Apagar tela, Volume −, Volume + e Mudo.
 - **Mac**: CPU (com os últimos 2 minutos), memória, bateria e rede.
@@ -13,11 +13,11 @@ A tela tem seis páginas. Para trocar de página, use o seletor no topo ou desli
 
 No topo da tela, o ícone USB fica verde com o Mac conectado. Aparecem também os selos **MIC** e câmera enquanto algum app usa o microfone ou uma câmera.
 
-O ícone na barra de menus fica apagado enquanto a placa não está conectada. O menu mostra a porta da placa. Os números de uso aparecem só na placa e na barra do AI Usage.
+O ícone na barra de menus fica apagado enquanto a placa não está conectada. O menu mostra a porta da placa. O Waveshare Link não mostra o uso na barra do topo.
 
 ### Processamento
 
-O Mac só coleta os dados da página que está na tela: a placa avisa qual página está visível, e Mac, Docker e Hora só rodam enquanto a página deles está aberta. Tocando e Microfone não fazem polling; reagem a notificações do sistema. As câmeras são conferidas a cada 3 s enquanto a placa está conectada.
+O uso das IAs só é buscado com a placa conectada. Fora isso, o Mac só coleta os dados da página que está na tela: a placa avisa qual página está visível, e Mac, Docker e Hora só rodam enquanto a página deles está aberta. Tocando e Microfone não fazem polling; reagem a notificações do sistema. As câmeras são conferidas a cada 3 s enquanto a placa está conectada.
 
 App nativo em Swift/AppKit. Não usa Xcode.
 
@@ -40,7 +40,8 @@ As teclas de mídia e de volume são eventos de teclado simulados, e o macOS exi
 ## Estrutura
 
 ```
-main.swift          # conexão USB, atalhos, uso vindo do AI Usage, barra de menus
+main.swift          # conexão USB, atalhos, página Uso, barra de menus
+UsageProviders.swift # provedores Claude e Antigravity, copiados do AI Usage (mantenha os dois iguais)
 NowPlaying.swift    # página Tocando (Music/Spotify, capa em JPEG 220x220)
 MicControl.swift    # microfone (CoreAudio) e câmera em uso (CoreMediaIO)
 SystemStats.swift   # página Mac
@@ -89,4 +90,4 @@ O app testa as portas `/dev/cu.usbmodem*`, `cu.usbserial*` e `cu.wchusbserial*`.
 
 Para testar sem a placa, use `WAVESHARE_LINK_SERIAL=/dev/ttysNNN` para apontar o app para um pty.
 
-O uso chega do AI Usage por notificações distribuídas do macOS (`local.aiusagebar.usage`, `.request` e `.refresh`). O README do AI Usage descreve essas notificações.
+O Claude é lido com o token do Claude Code (Keychain, item `Claude Code-credentials`) na API `api.anthropic.com/api/oauth/usage`. O Antigravity é lido da API local do hub (`~/.gemini/antigravity/daemon/hub_*.json`). Se uma dessas APIs mudar, corrija `UsageProviders.swift` aqui e no AI Usage.
