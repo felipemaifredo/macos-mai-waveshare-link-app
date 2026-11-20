@@ -135,11 +135,11 @@ final class SerialLink {
               let type = obj["t"] as? String else { return } // boot logs and other noise
         switch type {
         case "hello":
-            if !isLinked {
-                isLinked = true
-                onStatusChange()
-            }
+            // State first (the layout leads it), then the status change, which starts the feeds.
+            let wasLinked = isLinked
+            isLinked = true
             snapshot().forEach(send)
+            if !wasLinked { onStatusChange() }
         case "press":
             if isLinked, let id = obj["id"] as? String { onPress(id) }
         case "page":
@@ -356,17 +356,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Everything the board shows, sent again whenever it (re)connects.
         device.snapshot = { [weak self] in
             guard let self else { return [] }
-            return [usage.boardMessage(), nowPlaying.message, nowPlaying.artMessage, mic.message, clock.message]
-                .compactMap { $0 }
+            // The layout first, so the board has its tabs and keys before the data arrives.
+            return [Settings.shared.layoutMessage, usage.boardMessage(), nowPlaying.message,
+                    nowPlaying.artMessage, mic.message, clock.message]
         }
         device.onPress = { [weak self] id in
             if id == "refresh" { self?.usage.refresh() }
-            else if id == "key:mic" { self?.mic.toggle() }
-            else if id.hasPrefix("key:") { DeckActions.run(String(id.dropFirst(4))) }
+            else if id.hasPrefix("key:") { self?.pressKey(String(id.dropFirst(4))) }
+        }
+        Settings.shared.onChange = { [weak self] in
+            guard let self else { return }
+            push(Settings.shared.layoutMessage)
+            usage.setActive(device.isLinked && Settings.shared.isEnabled("usage"))
         }
         device.onPage = { [weak self] id in self?.pageChanged(id) }
         device.onStatusChange = { [weak self] in self?.linkChanged() }
         device.start()
+    }
+
+    /// Keys from the Atalhos page (configured in Settings) and the media buttons of the Tocando page.
+    func pressKey(_ id: String) {
+        let action = Settings.shared.key(boardID: id)
+        if id == "mic" || (action?.kind == "builtin" && action?.value == "mic") {
+            mic.toggle()
+        } else if let action {
+            KeyRunner.run(action)
+        } else {
+            DeckActions.run(id)
+        }
     }
 
     func push(_ msg: [String: Any]?) {
@@ -383,7 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func linkChanged() {
         statusItem.button?.appearsDisabled = !device.isLinked
         mic.setActive(device.isLinked)
-        usage.setActive(device.isLinked)
+        usage.setActive(device.isLinked && Settings.shared.isEnabled("usage"))
         if !device.isLinked { pageChanged("") }
     }
 
@@ -398,6 +415,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        let settings = NSMenuItem(title: "Ajustes…", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
         let login = NSMenuItem(title: "Abrir ao iniciar sessão", action: #selector(toggleLogin), keyEquivalent: "")
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -410,6 +430,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let i = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         i.isEnabled = false
         return i
+    }
+
+    @objc func openSettings() {
+        SettingsWindow.shared.show()
     }
 
     @objc func toggleLogin() {

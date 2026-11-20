@@ -2,14 +2,23 @@
 
 App de barra de menus do macOS que conversa com a tela touch **Waveshare ESP32-S3-Touch-LCD-7**, ligada ao Mac por cabo USB.
 
-A tela tem seis páginas. Para trocar de página, use o seletor no topo ou deslize o dedo para o lado:
+A tela tem até seis páginas. Para trocar de página, use o seletor no topo ou deslize o dedo para o lado:
 
 - **Uso**: o uso do Claude e do Antigravity. O Waveshare Link busca esses números sozinho, do mesmo jeito que o app [AI Usage](../macos-mai-ai-usage-app): ao conectar, a cada 5 min e no botão ↻. Os dois apps são independentes: o AI Usage mostra o uso na barra do topo, e o Waveshare Link manda para a placa.
 - **Tocando**: música, artista, álbum, capa e progresso do que toca no Music ou no Spotify, com Anterior, Play/Pausa e Próxima.
-- **Atalhos**: Captura (abre a barra do ⌘⇧5), Microfone (silencia o microfone padrão; fica vermelho quando mudo), Apagar tela, Volume −, Volume + e Mudo.
+- **Atalhos**: até 12 botões. De fábrica: Captura (abre a barra do ⌘⇧5), Microfone (silencia o microfone padrão; fica vermelho quando mudo), Apagar tela, Volume −, Volume + e Mudo.
 - **Mac**: CPU (com os últimos 2 minutos), memória, bateria e rede.
 - **Docker**: os containers, com estado, imagem e status. Só leitura.
 - **Hora**: relógio, data e o tempo em Cachoeiro de Itapemirim (Open-Meteo).
+
+### Ajustes
+
+Em **Ajustes…** (no menu do app, ou ⌘,) dá para:
+
+- **Abas**: ligar, desligar e reordenar as abas. Pelo menos uma fica ligada. Uma aba desligada não coleta dados, e com Uso desligado o app nem busca o uso das IAs.
+- **Atalhos**: criar, remover, reordenar e editar os botões da página Atalhos (nome, ícone e ação). A ação pode ser uma das prontas (captura, microfone, apagar tela, volume, mudo, play/pausa, anterior, próxima), abrir um app, abrir uma URL ou rodar um Atalho do macOS.
+
+A placa muda na hora, sem regravar o firmware. Os ajustes ficam salvos no app (UserDefaults) e são reenviados sempre que a placa conecta.
 
 No topo da tela, o ícone USB fica verde com o Mac conectado. Aparecem também os selos **MIC** e câmera enquanto algum app usa o microfone ou uma câmera.
 
@@ -29,6 +38,8 @@ bash build.sh
 
 O script compila os `.swift`, monta `build/Waveshare Link.app` e instala o app em `/Applications`. Depois do build, feche o app (Sair) e abra de novo.
 
+A janela de Ajustes usa SwiftUI sem `@State`: no SDK atual o `@State` é uma macro, e o `swiftc` sem Xcode não tem o plugin de macros do SwiftUI. Use `@StateObject`/`ObservableObject`.
+
 ### Permissões
 
 Na primeira vez que o Music ou o Spotify tocar, o macOS pede permissão de **Automação** para o Waveshare Link controlar cada um. Ela é necessária para ler a música e a capa.
@@ -47,6 +58,7 @@ MicControl.swift    # microfone (CoreAudio) e câmera em uso (CoreMediaIO)
 SystemStats.swift   # página Mac
 DockerFeed.swift    # página Docker (docker ps)
 ClockWeather.swift  # página Hora (hora + Open-Meteo)
+Settings.swift      # Ajustes: abas e atalhos (modelo, janela SwiftUI, execução dos atalhos)
 Info.plist          # bundle "Waveshare Link" (local.waveshare-link), LSUIElement (sem ícone no Dock)
 build.sh            # compila, empacota, assina ad-hoc e instala em /Applications
 firmware/           # firmware da placa (PlatformIO + Arduino + LVGL 9): ui.cpp (topo, Uso, Atalhos) e ui_*.cpp (demais páginas)
@@ -67,7 +79,7 @@ Se a placa sumir do USB, desconecte todos os cabos para ela desligar por complet
 
 ### Atalhos
 
-A lista de botões fica em `KEYS`, em `firmware/src/ui.cpp`. O relógio usa a Montserrat embutida em `font_montserrat_ttf.c` (renderizada pelo tiny_ttf do LVGL). Cada botão envia `key:<id>`, e o que ele faz no Mac fica em `DeckActions`, em `main.swift`.
+Os botões vêm do Mac (Ajustes). `DEFAULT_KEYS` em `firmware/src/ui.cpp` só vale até a primeira conexão. Os ícones possíveis estão em `ICONS`, no mesmo arquivo, e precisam bater com `Catalog.icons`, em `Settings.swift`. O relógio usa a Montserrat embutida em `font_montserrat_ttf.c` (renderizada pelo tiny_ttf do LVGL). Cada botão envia `key:<id>`. O Mac procura o atalho com esse id nos Ajustes e roda a ação (`KeyRunner`); as ações prontas ficam em `DeckActions`, em `main.swift`.
 
 ## Protocolo
 
@@ -78,6 +90,7 @@ A lista de botões fica em `KEYS`, em `firmware/src/ui.cpp`. O relógio usa a Mo
 | Placa → Mac | `{"t":"hello"}` a cada 1 s até o Mac responder |
 | Placa → Mac | `{"t":"press","id":"refresh"}` ou `{"t":"press","id":"key:<id>"}` quando alguém toca num botão |
 | Placa → Mac | `{"t":"page","id":"usage\|now\|keys\|mac\|docker\|clock"}` ao trocar de página e ao conectar |
+| Mac → Placa | `{"t":"layout","pages":[ids na ordem],"keys":[{"id","icon","text"}]}` ao conectar e ao mudar os Ajustes |
 | Mac → Placa | `{"t":"usage","providers":[{"name","pct","err","busy","at","rows":[{"sec","label","pct","reset"}]}]}` |
 | Mac → Placa | `{"t":"now","app","title","artist","album","playing","pos","dur"}` e `{"t":"art","jpg":"<base64>"}` (JPEG baseline 220x220) |
 | Mac → Placa | `{"t":"mic","muted","micInUse","camInUse"}` |

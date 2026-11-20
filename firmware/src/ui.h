@@ -18,3 +18,5 @@ void uiShowMac(JsonObjectConst msg);
 void uiShowDocker(JsonObjectConst msg);
 void uiShowClock(JsonObjectConst msg);
 void uiShowMic(JsonObjectConst msg);
+// {"t":"layout","pages":[ids in tab order],"keys":[{"id","icon","text"}]}
+void uiShowLayout(JsonObjectConst msg);

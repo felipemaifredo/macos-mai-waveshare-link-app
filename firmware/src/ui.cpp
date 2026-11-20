@@ -4,6 +4,8 @@
 
 #include <string.h>
 
+#include "src/widgets/tileview/lv_tileview_private.h"
+
 extern "C" const unsigned char montserrat_ttf[];
 extern "C" const size_t montserrat_ttf_len;
 
@@ -18,7 +20,6 @@ const Page PAGES[] = {
     {"mac", "Mac"},   {"docker", "Docker"}, {"clock", "Hora"},
 };
 constexpr int PAGE_COUNT = sizeof(PAGES) / sizeof(PAGES[0]);
-const char* PAGE_NAMES[] = {"Uso", "Tocando", "Atalhos", "Mac", "Docker", "Hora", ""};
 constexpr lv_style_selector_t ITEM_CHECKED = (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_CHECKED;
 
 struct UsageCard {
@@ -29,21 +30,47 @@ struct UsageCard {
     lv_obj_t* footer;
 };
 
-// Shortcut keys. The Mac receives "key:<id>" and decides what each one does (DeckActions in main.swift).
-struct Key {
+// Icon names the Mac can use for shortcut keys (the same list is in Settings.swift).
+struct Icon {
+    const char* name;
+    const char* symbol;
+};
+const Icon ICONS[] = {
+    {"mic", "MIC"}, {"image", LV_SYMBOL_IMAGE}, {"audio", LV_SYMBOL_AUDIO}, {"video", LV_SYMBOL_VIDEO},
+    {"play", LV_SYMBOL_PLAY}, {"pause", LV_SYMBOL_PAUSE}, {"prev", LV_SYMBOL_PREV}, {"next", LV_SYMBOL_NEXT},
+    {"stop", LV_SYMBOL_STOP}, {"shuffle", LV_SYMBOL_SHUFFLE}, {"loop", LV_SYMBOL_LOOP},
+    {"volume_mid", LV_SYMBOL_VOLUME_MID}, {"volume_max", LV_SYMBOL_VOLUME_MAX}, {"mute", LV_SYMBOL_MUTE},
+    {"eye_close", LV_SYMBOL_EYE_CLOSE}, {"eye_open", LV_SYMBOL_EYE_OPEN}, {"home", LV_SYMBOL_HOME},
+    {"settings", LV_SYMBOL_SETTINGS}, {"power", LV_SYMBOL_POWER}, {"refresh", LV_SYMBOL_REFRESH},
+    {"bell", LV_SYMBOL_BELL}, {"envelope", LV_SYMBOL_ENVELOPE}, {"call", LV_SYMBOL_CALL},
+    {"keyboard", LV_SYMBOL_KEYBOARD}, {"file", LV_SYMBOL_FILE}, {"directory", LV_SYMBOL_DIRECTORY},
+    {"edit", LV_SYMBOL_EDIT}, {"save", LV_SYMBOL_SAVE}, {"trash", LV_SYMBOL_TRASH},
+    {"download", LV_SYMBOL_DOWNLOAD}, {"upload", LV_SYMBOL_UPLOAD}, {"copy", LV_SYMBOL_COPY},
+    {"paste", LV_SYMBOL_PASTE}, {"cut", LV_SYMBOL_CUT}, {"wifi", LV_SYMBOL_WIFI},
+    {"bluetooth", LV_SYMBOL_BLUETOOTH}, {"gps", LV_SYMBOL_GPS}, {"charge", LV_SYMBOL_CHARGE},
+    {"list", LV_SYMBOL_LIST}, {"plus", LV_SYMBOL_PLUS}, {"minus", LV_SYMBOL_MINUS}, {"ok", LV_SYMBOL_OK},
+    {"close", LV_SYMBOL_CLOSE}, {"warning", LV_SYMBOL_WARNING}, {"drive", LV_SYMBOL_DRIVE},
+    {"sd_card", LV_SYMBOL_SD_CARD}, {"usb", LV_SYMBOL_USB}, {"eject", LV_SYMBOL_EJECT}, {"tint", LV_SYMBOL_TINT},
+};
+
+const char* iconSymbol(const char* name) {
+    for (const Icon& i : ICONS) {
+        if (strcmp(i.name, name) == 0) return i.symbol;
+    }
+    return LV_SYMBOL_BULLET;
+}
+
+// Shortcut keys until the Mac sends its own list. The Mac receives "key:<id>" and decides what each does.
+struct DefaultKey {
     const char* id;
     const char* icon;
     const char* text;
 };
-const Key KEYS[] = {
-    {"shot", LV_SYMBOL_IMAGE, "Captura"},
-    {"mic", "MIC", "Microfone"},
-    {"sleep", LV_SYMBOL_EYE_CLOSE, "Apagar tela"},
-    {"voldown", LV_SYMBOL_VOLUME_MID, "Volume -"},
-    {"volup", LV_SYMBOL_VOLUME_MAX, "Volume +"},
-    {"mute", LV_SYMBOL_MUTE, "Mudo"},
+const DefaultKey DEFAULT_KEYS[] = {
+    {"shot", "image", "Captura"},       {"mic", "mic", "Microfone"},       {"sleep", "eye_close", "Apagar tela"},
+    {"voldown", "volume_mid", "Volume -"}, {"volup", "volume_max", "Volume +"}, {"mute", "mute", "Mudo"},
 };
-constexpr int KEY_COUNT = sizeof(KEYS) / sizeof(KEYS[0]);
+constexpr int MAX_KEYS = 12;
 
 UsageCard usageCards[2];
 lv_obj_t* usbIcon;
@@ -53,9 +80,15 @@ lv_obj_t* refreshBtn;
 lv_obj_t* pageSwitch;
 lv_obj_t* pages;
 lv_obj_t* tiles[PAGE_COUNT];
-lv_obj_t* keyBtns[KEY_COUNT];
-lv_obj_t* micBtn;
-lv_obj_t* micCaption;
+const char* switchMap[PAGE_COUNT + 1];
+int order[PAGE_COUNT]; // page indexes in tab order; only the first visibleCount are shown
+int visibleCount = PAGE_COUNT;
+lv_obj_t* keyBtns[MAX_KEYS];
+int keyCount = 0;
+lv_obj_t* micBtn = nullptr;
+lv_obj_t* micCaption = nullptr;
+bool micMuted = false;
+char micText[48] = "Microfone"; // the mic key's own caption, shown when not muted
 lv_timer_t* refreshTimeout = nullptr;
 PressHandler pressHandler = nullptr;
 PageHandler pageHandler = nullptr;
@@ -176,53 +209,128 @@ void fillUsageCard(UsageCard& c, JsonObjectConst p) {
 
 // --- Shortcuts page ---------------------------------------------------------
 
-void makeDeck(lv_obj_t* parent) {
-    static const int32_t cols[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
-    static const int32_t rows[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
-    lv_obj_set_layout(parent, LV_LAYOUT_GRID);
-    lv_obj_set_grid_dsc_array(parent, cols, rows);
-    lv_obj_set_style_pad_column(parent, 14, 0);
-    lv_obj_set_style_pad_row(parent, 14, 0);
+void applyMicState() {
+    if (!micBtn) return;
+    lv_obj_set_style_bg_color(micBtn, micMuted ? DANGER : CARD, 0);
+    lv_obj_set_style_bg_color(micBtn, micMuted ? lv_color_hex(0xC23B3F) : PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_text_color(micCaption, micMuted ? TEXT : DIM, 0);
+    lv_label_set_text(micCaption, micMuted ? "Microfone mudo" : micText);
+}
 
-    for (int i = 0; i < KEY_COUNT; i++) {
-        char id[32];
-        snprintf(id, sizeof(id), "key:%s", KEYS[i].id);
-        lv_obj_t* b = deckButton(parent, id, KEYS[i].icon, KEYS[i].text);
-        lv_obj_set_grid_cell(b, LV_GRID_ALIGN_STRETCH, i % 3, 1, LV_GRID_ALIGN_STRETCH, i / 3, 1);
-        keyBtns[i] = b;
-        if (strcmp(KEYS[i].id, "mic") == 0) {
-            micBtn = b;
-            micCaption = lv_obj_get_child(b, 1);
-        }
+void addKey(const char* id, const char* icon, const char* text) {
+    if (keyCount >= MAX_KEYS) return;
+    char press[48];
+    snprintf(press, sizeof(press), "key:%s", id);
+    lv_obj_t* b = deckButton(tiles[2], press, iconSymbol(icon), text);
+    if (!isLinked) lv_obj_add_state(b, LV_STATE_DISABLED);
+    if (strcmp(id, "mic") == 0) {
+        micBtn = b;
+        micCaption = lv_obj_get_child(b, 1);
+        snprintf(micText, sizeof(micText), "%s", text);
     }
+    keyBtns[keyCount++] = b;
+}
+
+// Lays the keys out in a grid that fits their number: up to 4 per row, 3 rows.
+void layoutKeys() {
+    static int32_t cols[5];
+    static int32_t rows[4];
+    const int n = keyCount > 0 ? keyCount : 1;
+    const int ncol = n <= 4 ? n : n <= 6 ? 3 : 4;
+    const int nrow = (n + ncol - 1) / ncol;
+    for (int i = 0; i < ncol; i++) cols[i] = LV_GRID_FR(1);
+    cols[ncol] = LV_GRID_TEMPLATE_LAST;
+    for (int i = 0; i < nrow; i++) rows[i] = LV_GRID_FR(1);
+    rows[nrow] = LV_GRID_TEMPLATE_LAST;
+    lv_obj_set_grid_dsc_array(tiles[2], cols, rows);
+    for (int i = 0; i < keyCount; i++) {
+        lv_obj_set_grid_cell(keyBtns[i], LV_GRID_ALIGN_STRETCH, i % ncol, 1, LV_GRID_ALIGN_STRETCH, i / ncol, 1);
+    }
+}
+
+void clearKeys() {
+    lv_obj_clean(tiles[2]);
+    keyCount = 0;
+    micBtn = nullptr;
+    micCaption = nullptr;
+}
+
+void makeDeck() {
+    lv_obj_set_layout(tiles[2], LV_LAYOUT_GRID);
+    lv_obj_set_style_pad_column(tiles[2], 14, 0);
+    lv_obj_set_style_pad_row(tiles[2], 14, 0);
+    for (const DefaultKey& k : DEFAULT_KEYS) addKey(k.id, k.icon, k.text);
+    layoutKeys();
 }
 
 // --- Shell --------------------------------------------------------------------
 
-void pageShown(int idx) {
-    lv_buttonmatrix_set_button_ctrl(pageSwitch, idx, LV_BUTTONMATRIX_CTRL_CHECKED);
-    showHidden(refreshBtn, idx == 0);
-    if (idx == currentPage) return;
-    currentPage = idx;
-    if (pageHandler) pageHandler(PAGES[idx].id);
+// `pos` is the tab position; order[pos] is the page.
+void pageShown(int pos) {
+    lv_buttonmatrix_set_button_ctrl(pageSwitch, pos, LV_BUTTONMATRIX_CTRL_CHECKED);
+    const int page = order[pos];
+    showHidden(refreshBtn, strcmp(PAGES[page].id, "usage") == 0);
+    if (page == currentPage) return;
+    currentPage = page;
+    if (pageHandler) pageHandler(PAGES[page].id);
 }
 
 void onPageSwitch(lv_event_t*) {
-    const uint32_t idx = lv_buttonmatrix_get_selected_button(pageSwitch);
-    if (idx >= PAGE_COUNT) return;
-    lv_tileview_set_tile_by_index(pages, idx, 0, LV_ANIM_ON);
-    pageShown(idx);
+    const uint32_t pos = lv_buttonmatrix_get_selected_button(pageSwitch);
+    if (pos >= (uint32_t)visibleCount) return;
+    lv_tileview_set_tile_by_index(pages, pos, 0, LV_ANIM_ON);
+    pageShown(pos);
 }
 
 void onPageSwiped(lv_event_t*) {
     lv_obj_t* active = lv_tileview_get_tile_active(pages);
-    for (int i = 0; i < PAGE_COUNT; i++) {
-        if (tiles[i] == active) pageShown(i);
+    for (int pos = 0; pos < visibleCount; pos++) {
+        if (tiles[order[pos]] == active) pageShown(pos);
     }
+}
+
+// Puts the visible tiles side by side in tab order and hides the others. The pages keep their state.
+void applyPages() {
+    bool shown[PAGE_COUNT] = {};
+    for (int pos = 0; pos < visibleCount; pos++) {
+        const int page = order[pos];
+        shown[page] = true;
+        switchMap[pos] = PAGES[page].name;
+        lv_obj_remove_flag(tiles[page], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(tiles[page], lv_pct(pos * 100), 0);
+        int dir = LV_DIR_NONE;
+        if (pos > 0) dir |= LV_DIR_LEFT;
+        if (pos < visibleCount - 1) dir |= LV_DIR_RIGHT;
+        reinterpret_cast<lv_tileview_tile_t*>(tiles[page])->dir = static_cast<lv_dir_t>(dir);
+    }
+    switchMap[visibleCount] = "";
+    for (int page = 0; page < PAGE_COUNT; page++) {
+        if (shown[page]) continue;
+        // The tileview finds the active tile by position and does not skip hidden ones,
+        // so a hidden tile must never share a position with a visible one.
+        lv_obj_add_flag(tiles[page], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(tiles[page], lv_pct((PAGE_COUNT + page) * 100), 0);
+    }
+    lv_buttonmatrix_set_map(pageSwitch, switchMap);
+    lv_buttonmatrix_set_button_ctrl_all(pageSwitch, LV_BUTTONMATRIX_CTRL_CHECKABLE);
+    lv_obj_set_width(pageSwitch, visibleCount * 95);
+
+    // Stay on the same page if it is still there, otherwise go to the first tab.
+    int pos = 0;
+    for (int i = 0; i < visibleCount; i++) {
+        if (order[i] == currentPage) pos = i;
+    }
+    lv_obj_update_layout(pages);
+    lv_tileview_set_tile_by_index(pages, pos, 0, LV_ANIM_OFF);
+    pageShown(pos);
 }
 
 void onDeckButton(lv_event_t* e) {
     sendPress(static_cast<const char*>(lv_event_get_user_data(e)));
+}
+
+void onDeckButtonDeleted(lv_event_t* e) {
+    free(lv_event_get_user_data(e));
 }
 
 lv_obj_t* badge(lv_obj_t* parent, const char* text, lv_color_t color) {
@@ -277,7 +385,9 @@ lv_obj_t* deckButton(lv_obj_t* parent, const char* id, const char* icon, const c
     lv_obj_set_flex_flow(b, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(b, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(b, 14, 0);
-    lv_obj_add_event_cb(b, onDeckButton, LV_EVENT_CLICKED, (void*)strdup(id));
+    char* copy = strdup(id);
+    lv_obj_add_event_cb(b, onDeckButton, LV_EVENT_CLICKED, copy);
+    lv_obj_add_event_cb(b, onDeckButtonDeleted, LV_EVENT_DELETE, copy);
     label(b, &lv_font_montserrat_48, TEXT, icon);
     if (text) label(b, &lv_font_montserrat_20, DIM, text);
     return b;
@@ -333,8 +443,12 @@ void uiBegin(PressHandler onPress, PageHandler onPage) {
     lv_obj_set_style_pad_column(header, 12, 0);
 
     pageSwitch = lv_buttonmatrix_create(header);
-    lv_buttonmatrix_set_map(pageSwitch, PAGE_NAMES);
-    lv_buttonmatrix_set_button_ctrl_all(pageSwitch, LV_BUTTONMATRIX_CTRL_CHECKABLE);
+    for (int i = 0; i < PAGE_COUNT; i++) {
+        order[i] = i;
+        switchMap[i] = PAGES[i].name;
+    }
+    switchMap[PAGE_COUNT] = "";
+    lv_buttonmatrix_set_map(pageSwitch, switchMap);
     lv_buttonmatrix_set_one_checked(pageSwitch, true);
     lv_obj_set_size(pageSwitch, 570, 52);
     lv_obj_set_style_pad_all(pageSwitch, 4, 0);
@@ -375,8 +489,7 @@ void uiBegin(PressHandler onPress, PageHandler onPage) {
     lv_obj_set_scrollbar_mode(pages, LV_SCROLLBAR_MODE_OFF);
     lv_obj_add_event_cb(pages, onPageSwiped, LV_EVENT_VALUE_CHANGED, nullptr);
     for (int i = 0; i < PAGE_COUNT; i++) {
-        const lv_dir_t dir = i == 0 ? LV_DIR_RIGHT : i == PAGE_COUNT - 1 ? LV_DIR_LEFT : LV_DIR_HOR;
-        tiles[i] = lv_tileview_add_tile(pages, i, 0, dir);
+        tiles[i] = lv_tileview_add_tile(pages, i, 0, LV_DIR_HOR);
         lv_obj_set_style_pad_all(tiles[i], 0, 0);
     }
 
@@ -386,12 +499,13 @@ void uiBegin(PressHandler onPress, PageHandler onPage) {
     usageCards[1] = makeUsageCard(tiles[0]);
 
     nowBuild(tiles[1]);
-    makeDeck(tiles[2]);
+    makeDeck();
     macBuild(tiles[3]);
     dockerBuild(tiles[4]);
     clockBuild(tiles[5]);
 
-    lv_buttonmatrix_set_button_ctrl(pageSwitch, 0, LV_BUTTONMATRIX_CTRL_CHECKED);
+    currentPage = -1; // so applyPages reports the first page
+    applyPages();
     uiSetLinked(false);
 }
 
@@ -401,9 +515,9 @@ void uiSetLinked(bool linked) {
     isLinked = linked;
     lv_obj_set_style_text_color(usbIcon, linked ? GOOD : DIM, 0);
     setRefreshing(refreshTimeout != nullptr);
-    for (lv_obj_t* b : keyBtns) {
-        if (linked) lv_obj_remove_state(b, LV_STATE_DISABLED);
-        else lv_obj_add_state(b, LV_STATE_DISABLED);
+    for (int i = 0; i < keyCount; i++) {
+        if (linked) lv_obj_remove_state(keyBtns[i], LV_STATE_DISABLED);
+        else lv_obj_add_state(keyBtns[i], LV_STATE_DISABLED);
     }
     nowSetLinked(linked);
     if (!linked) {
@@ -428,11 +542,8 @@ void uiShowUsage(JsonArrayConst providers) {
 }
 
 void uiShowMic(JsonObjectConst msg) {
-    const bool muted = msg["muted"] | false;
-    lv_obj_set_style_bg_color(micBtn, muted ? DANGER : CARD, 0);
-    lv_obj_set_style_bg_color(micBtn, muted ? lv_color_hex(0xC23B3F) : PRESSED, LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(micCaption, muted ? TEXT : DIM, 0);
-    lv_label_set_text(micCaption, muted ? "Microfone mudo" : "Microfone");
+    micMuted = msg["muted"] | false;
+    applyMicState();
     showHidden(micBadge, msg["micInUse"] | false);
     showHidden(camBadge, msg["camInUse"] | false);
 }
@@ -442,3 +553,37 @@ void uiShowArt(const char* base64) { nowShowArt(base64); }
 void uiShowMac(JsonObjectConst msg) { macShow(msg); }
 void uiShowDocker(JsonObjectConst msg) { dockerShow(msg); }
 void uiShowClock(JsonObjectConst msg) { clockShow(msg); }
+
+void uiShowLayout(JsonObjectConst msg) {
+    // Tabs: the ids in order. Unknown ids are skipped; an empty list keeps all of them.
+    int n = 0;
+    for (JsonVariantConst v : msg["pages"].as<JsonArrayConst>()) {
+        const char* id = v | "";
+        for (int page = 0; page < PAGE_COUNT; page++) {
+            bool dup = false;
+            for (int i = 0; i < n; i++) dup |= order[i] == page;
+            if (!dup && strcmp(PAGES[page].id, id) == 0 && n < PAGE_COUNT) order[n++] = page;
+        }
+    }
+    if (n > 0) {
+        // Keep the hidden pages after the visible ones so every index stays valid.
+        int all = n;
+        for (int page = 0; page < PAGE_COUNT; page++) {
+            bool used = false;
+            for (int i = 0; i < n; i++) used |= order[i] == page;
+            if (!used) order[all++] = page;
+        }
+        visibleCount = n;
+        applyPages();
+    }
+
+    // Shortcut keys: [{"id","icon","text"}], up to 12.
+    if (msg["keys"].is<JsonArrayConst>()) {
+        clearKeys();
+        for (JsonObjectConst k : msg["keys"].as<JsonArrayConst>()) {
+            addKey(k["id"] | "", k["icon"] | "", k["text"] | "");
+        }
+        layoutKeys();
+        applyMicState();
+    }
+}

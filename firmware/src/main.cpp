@@ -3,7 +3,7 @@
 // Protocol: one JSON object per line, on both USB ports (native "USB" and "UART").
 //   Board → Mac: {"t":"hello"} every second until the Mac answers; {"t":"press","id":"refresh"|"key:<id>"};
 //                {"t":"page","id":…} when the visible page changes (the Mac only gathers data for it)
-//   Mac → Board: {"t":"usage"|"now"|"art"|"mac"|"docker"|"clock"|"mic",…} and {"t":"ping"} every 2 s
+//   Mac → Board: {"t":"layout"|"usage"|"now"|"art"|"mac"|"docker"|"clock"|"mic",…} and {"t":"ping"} every 2 s
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <lvgl.h>
@@ -69,6 +69,7 @@ void handleLine(const String& line) {
     else if (strcmp(t, "docker") == 0) uiShowDocker(msg);
     else if (strcmp(t, "clock") == 0) uiShowClock(msg);
     else if (strcmp(t, "mic") == 0) uiShowMic(msg);
+    else if (strcmp(t, "layout") == 0) uiShowLayout(msg);
 }
 
 void pollPorts() {
