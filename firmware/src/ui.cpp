@@ -18,6 +18,7 @@ struct Page {
 const Page PAGES[] = {
     {"usage", "Uso"}, {"now", "Tocando"}, {"keys", "Atalhos"},
     {"mac", "Mac"},   {"docker", "Docker"}, {"clock", "Hora"},
+    {"audio", "Mixer"}, {"apps", "Apps"},   {"discord", "Discord"},
 };
 constexpr int PAGE_COUNT = sizeof(PAGES) / sizeof(PAGES[0]);
 constexpr lv_style_selector_t ITEM_CHECKED = (lv_style_selector_t)LV_PART_ITEMS | (lv_style_selector_t)LV_STATE_CHECKED;
@@ -85,8 +86,15 @@ int order[PAGE_COUNT]; // page indexes in tab order; only the first visibleCount
 int visibleCount = PAGE_COUNT;
 lv_obj_t* keyBtns[MAX_KEYS];
 int keyCount = 0;
+lv_obj_t* appBtns[MAX_KEYS];
+int appCount = 0;
 lv_obj_t* micBtn = nullptr;
 lv_obj_t* micCaption = nullptr;
+lv_obj_t* discordDock = nullptr;
+lv_obj_t* dockMuteBtn = nullptr;
+lv_obj_t* dockMuteLabel = nullptr;
+lv_obj_t* dockDeafBtn = nullptr;
+lv_obj_t* dockDeafLabel = nullptr;
 bool micMuted = false;
 char micText[48] = "Microfone"; // the mic key's own caption, shown when not muted
 lv_timer_t* refreshTimeout = nullptr;
@@ -263,6 +271,51 @@ void makeDeck() {
     layoutKeys();
 }
 
+// --- Apps page --------------------------------------------------------------
+
+const DefaultKey DEFAULT_APPS[] = {
+    {"term", "keyboard", "Terminal"}, {"safari", "wifi", "Safari"}, {"code", "edit", "VS Code"},
+    {"discord", "call", "Discord"},   {"music", "audio", "Spotify"}, {"finder", "directory", "Finder"},
+};
+
+void addApp(const char* id, const char* icon, const char* text) {
+    if (appCount >= MAX_KEYS) return;
+    char press[48];
+    snprintf(press, sizeof(press), "app:%s", id);
+    lv_obj_t* b = deckButton(tiles[7], press, iconSymbol(icon), text);
+    if (!isLinked) lv_obj_add_state(b, LV_STATE_DISABLED);
+    appBtns[appCount++] = b;
+}
+
+void layoutApps() {
+    static int32_t cols[5];
+    static int32_t rows[4];
+    const int n = appCount > 0 ? appCount : 1;
+    const int ncol = n <= 4 ? n : n <= 6 ? 3 : 4;
+    const int nrow = (n + ncol - 1) / ncol;
+    for (int i = 0; i < ncol; i++) cols[i] = LV_GRID_FR(1);
+    cols[ncol] = LV_GRID_TEMPLATE_LAST;
+    for (int i = 0; i < nrow; i++) rows[i] = LV_GRID_FR(1);
+    rows[nrow] = LV_GRID_TEMPLATE_LAST;
+    lv_obj_set_grid_dsc_array(tiles[7], cols, rows);
+    for (int i = 0; i < appCount; i++) {
+        lv_obj_set_grid_cell(appBtns[i], LV_GRID_ALIGN_STRETCH, i % ncol, 1, LV_GRID_ALIGN_STRETCH, i / ncol, 1);
+    }
+}
+
+void clearApps() {
+    lv_obj_clean(tiles[7]);
+    appCount = 0;
+}
+
+void makeAppDeck() {
+    lv_obj_set_layout(tiles[7], LV_LAYOUT_GRID);
+    lv_obj_set_style_pad_column(tiles[7], 14, 0);
+    lv_obj_set_style_pad_row(tiles[7], 14, 0);
+    for (const DefaultKey& k : DEFAULT_APPS) addApp(k.id, k.icon, k.text);
+    layoutApps();
+}
+
 // --- Shell --------------------------------------------------------------------
 
 // `pos` is the tab position; order[pos] is the page.
@@ -313,7 +366,12 @@ void applyPages() {
     }
     lv_buttonmatrix_set_map(pageSwitch, switchMap);
     lv_buttonmatrix_set_button_ctrl_all(pageSwitch, LV_BUTTONMATRIX_CTRL_CHECKABLE);
-    lv_obj_set_width(pageSwitch, visibleCount * 95);
+    lv_obj_set_width(pageSwitch, visibleCount > 6 ? (visibleCount > 7 ? visibleCount * 68 : visibleCount * 80) : visibleCount * 95);
+    if (visibleCount > 7) {
+        lv_obj_set_style_text_font(pageSwitch, &lv_font_montserrat_16, LV_PART_ITEMS);
+    } else {
+        lv_obj_set_style_text_font(pageSwitch, &lv_font_montserrat_20, LV_PART_ITEMS);
+    }
 
     // Stay on the same page if it is still there, otherwise go to the first tab.
     int pos = 0;
@@ -481,13 +539,60 @@ void uiBegin(PressHandler onPress, PageHandler onPage) {
     lv_obj_add_event_cb(refreshBtn, onRefresh, LV_EVENT_CLICKED, nullptr);
     lv_obj_center(label(refreshBtn, &lv_font_montserrat_20, TEXT, LV_SYMBOL_REFRESH));
 
+    // Content row: pages (left) + optional persistent Discord dock (right when in call)
+    lv_obj_t* mainRow = box(scr, LV_FLEX_FLOW_ROW);
+    lv_obj_set_width(mainRow, LV_PCT(100));
+    lv_obj_set_flex_grow(mainRow, 1);
+    lv_obj_set_style_pad_column(mainRow, 10, 0);
+    lv_obj_remove_flag(mainRow, LV_OBJ_FLAG_SCROLLABLE);
+
     // The pages side by side: swipe or use the switch in the header.
-    pages = lv_tileview_create(scr);
-    lv_obj_set_width(pages, LV_PCT(100));
+    pages = lv_tileview_create(mainRow);
     lv_obj_set_flex_grow(pages, 1);
+    lv_obj_set_height(pages, LV_PCT(100));
     lv_obj_set_style_bg_opa(pages, LV_OPA_TRANSP, 0);
     lv_obj_set_scrollbar_mode(pages, LV_SCROLLBAR_MODE_OFF);
     lv_obj_add_event_cb(pages, onPageSwiped, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    // Discord Sidebar Dock (visible when in call)
+    discordDock = card(mainRow);
+    lv_obj_set_size(discordDock, 110, LV_PCT(100));
+    lv_obj_set_flex_flow(discordDock, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(discordDock, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(discordDock, 8, 0);
+    lv_obj_set_style_pad_row(discordDock, 10, 0);
+    lv_obj_set_style_border_color(discordDock, lv_color_hex(0x5865F2), 0);
+    lv_obj_set_style_border_width(discordDock, 2, 0);
+    lv_obj_add_flag(discordDock, LV_OBJ_FLAG_HIDDEN);
+
+    label(discordDock, &lv_font_montserrat_16, lv_color_hex(0x5865F2), "DISCORD");
+
+    dockMuteBtn = lv_button_create(discordDock);
+    lv_obj_set_width(dockMuteBtn, LV_PCT(100));
+    lv_obj_set_flex_grow(dockMuteBtn, 1);
+    lv_obj_set_style_radius(dockMuteBtn, 14, 0);
+    lv_obj_set_style_bg_color(dockMuteBtn, lv_color_hex(0x5865F2), 0);
+    lv_obj_set_style_bg_color(dockMuteBtn, PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(dockMuteBtn, 0, 0);
+    lv_obj_set_flex_flow(dockMuteBtn, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(dockMuteBtn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_event_cb(dockMuteBtn, [](lv_event_t*) { sendPress("discord:mute"); }, LV_EVENT_CLICKED, nullptr);
+    label(dockMuteBtn, &lv_font_montserrat_28, TEXT, "MIC");
+    dockMuteLabel = label(dockMuteBtn, &lv_font_montserrat_16, TEXT, "Mudo");
+
+    dockDeafBtn = lv_button_create(discordDock);
+    lv_obj_set_width(dockDeafBtn, LV_PCT(100));
+    lv_obj_set_flex_grow(dockDeafBtn, 1);
+    lv_obj_set_style_radius(dockDeafBtn, 14, 0);
+    lv_obj_set_style_bg_color(dockDeafBtn, lv_color_hex(0x5865F2), 0);
+    lv_obj_set_style_bg_color(dockDeafBtn, PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(dockDeafBtn, 0, 0);
+    lv_obj_set_flex_flow(dockDeafBtn, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(dockDeafBtn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_event_cb(dockDeafBtn, [](lv_event_t*) { sendPress("discord:deaf"); }, LV_EVENT_CLICKED, nullptr);
+    label(dockDeafBtn, &lv_font_montserrat_28, TEXT, LV_SYMBOL_AUDIO);
+    dockDeafLabel = label(dockDeafBtn, &lv_font_montserrat_16, TEXT, "Ouvir");
+
     for (int i = 0; i < PAGE_COUNT; i++) {
         tiles[i] = lv_tileview_add_tile(pages, i, 0, LV_DIR_HOR);
         lv_obj_set_style_pad_all(tiles[i], 0, 0);
@@ -503,6 +608,9 @@ void uiBegin(PressHandler onPress, PageHandler onPage) {
     macBuild(tiles[3]);
     dockerBuild(tiles[4]);
     clockBuild(tiles[5]);
+    audioBuild(tiles[6]);
+    makeAppDeck();
+    discordBuild(tiles[8]);
 
     currentPage = -1; // so applyPages reports the first page
     applyPages();
@@ -519,7 +627,22 @@ void uiSetLinked(bool linked) {
         if (linked) lv_obj_remove_state(keyBtns[i], LV_STATE_DISABLED);
         else lv_obj_add_state(keyBtns[i], LV_STATE_DISABLED);
     }
+    for (int i = 0; i < appCount; i++) {
+        if (linked) lv_obj_remove_state(appBtns[i], LV_STATE_DISABLED);
+        else lv_obj_add_state(appBtns[i], LV_STATE_DISABLED);
+    }
     nowSetLinked(linked);
+    audioSetLinked(linked);
+    discordSetLinked(linked);
+    if (discordDock) {
+        if (linked) {
+            lv_obj_remove_state(dockMuteBtn, LV_STATE_DISABLED);
+            lv_obj_remove_state(dockDeafBtn, LV_STATE_DISABLED);
+        } else {
+            lv_obj_add_state(dockMuteBtn, LV_STATE_DISABLED);
+            lv_obj_add_state(dockDeafBtn, LV_STATE_DISABLED);
+        }
+    }
     if (!linked) {
         lv_obj_add_flag(micBadge, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(camBadge, LV_OBJ_FLAG_HIDDEN);
@@ -553,6 +676,23 @@ void uiShowArt(const char* base64) { nowShowArt(base64); }
 void uiShowMac(JsonObjectConst msg) { macShow(msg); }
 void uiShowDocker(JsonObjectConst msg) { dockerShow(msg); }
 void uiShowClock(JsonObjectConst msg) { clockShow(msg); }
+void uiShowAudio(JsonObjectConst msg) { audioShow(msg); }
+void uiShowDiscord(JsonObjectConst msg) {
+    const bool inCall = msg["inCall"] | false;
+    const bool isMuted = msg["muted"] | false;
+    const bool isDeaf = msg["deafened"] | false;
+
+    if (discordDock) {
+        showHidden(discordDock, inCall);
+        lv_obj_set_style_bg_color(dockMuteBtn, isMuted ? DANGER : lv_color_hex(0x5865F2), 0);
+        lv_label_set_text(dockMuteLabel, isMuted ? "Mutado" : "Mic ON");
+
+        lv_obj_set_style_bg_color(dockDeafBtn, isDeaf ? DANGER : lv_color_hex(0x5865F2), 0);
+        lv_label_set_text(dockDeafLabel, isDeaf ? "Surdo" : "Ouvindo");
+    }
+
+    discordShow(msg);
+}
 
 void uiShowLayout(JsonObjectConst msg) {
     // Tabs: the ids in order. Unknown ids are skipped; an empty list keeps all of them.
@@ -585,5 +725,14 @@ void uiShowLayout(JsonObjectConst msg) {
         }
         layoutKeys();
         applyMicState();
+    }
+
+    // App shortcut keys: [{"id","icon","text"}], up to 12.
+    if (msg["apps"].is<JsonArrayConst>()) {
+        clearApps();
+        for (JsonObjectConst k : msg["apps"].as<JsonArrayConst>()) {
+            addApp(k["id"] | "", k["icon"] | "", k["text"] | "");
+        }
+        layoutApps();
     }
 }

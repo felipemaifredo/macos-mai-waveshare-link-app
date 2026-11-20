@@ -2,7 +2,7 @@
 
 App de barra de menus do macOS que conversa com a tela touch **Waveshare ESP32-S3-Touch-LCD-7**, ligada ao Mac por cabo USB.
 
-A tela tem até seis páginas. Para trocar de página, use o seletor no topo ou deslize o dedo para o lado:
+A tela tem até sete páginas. Para trocar de página, use o seletor no topo ou deslize o dedo para o lado:
 
 - **Uso**: o uso do Claude e do Antigravity. O Waveshare Link busca esses números sozinho, do mesmo jeito que o app [AI Usage](../macos-mai-ai-usage-app): ao conectar, a cada 5 min e no botão ↻. Os dois apps são independentes: o AI Usage mostra o uso na barra do topo, e o Waveshare Link manda para a placa.
 - **Tocando**: música, artista, álbum, capa e progresso do que toca no Music ou no Spotify, com Anterior, Play/Pausa e Próxima.
@@ -10,6 +10,9 @@ A tela tem até seis páginas. Para trocar de página, use o seletor no topo ou 
 - **Mac**: CPU (com os últimos 2 minutos), memória, bateria e rede.
 - **Docker**: os containers, com estado, imagem e status. Só leitura.
 - **Hora**: relógio, data e o tempo em Cachoeiro de Itapemirim (Open-Meteo).
+- **Mixer**: volume independente com sliders verticais táteis para Saída Master do Mac, Mídia (Spotify/Music) e Microfone, além de seletor rápido do dispositivo de saída de áudio (Speakers, AirPods, Fone, etc.).
+- **Apps**: grid de até 12 botões customizáveis para abrir aplicativos no Mac (App Launcher).
+- **Discord**: controle dedicado de chamada com status, botão Mutar/Desmutar, Ensurdecer (Deafen) e Desconectar.
 
 ### Ajustes
 
@@ -17,6 +20,7 @@ Em **Ajustes…** (no menu do app, ou ⌘,) dá para:
 
 - **Abas**: ligar, desligar e reordenar as abas. Pelo menos uma fica ligada. Uma aba desligada não coleta dados, e com Uso desligado o app nem busca o uso das IAs.
 - **Atalhos**: criar, remover, reordenar e editar os botões da página Atalhos (nome, ícone e ação). A ação pode ser uma das prontas (captura, microfone, apagar tela, volume, mudo, play/pausa, anterior, próxima), abrir um app, abrir uma URL ou rodar um Atalho do macOS.
+- **Apps**: configurar os botões dedicados da página Apps com escolha direta dos aplicativos instalados no Mac.
 
 A placa muda na hora, sem regravar o firmware. Os ajustes ficam salvos no app (UserDefaults) e são reenviados sempre que a placa conecta.
 
@@ -54,6 +58,7 @@ As teclas de mídia e de volume são eventos de teclado simulados, e o macOS exi
 main.swift          # conexão USB, atalhos, página Uso, barra de menus
 UsageProviders.swift # provedores Claude e Antigravity, copiados do AI Usage (mantenha os dois iguais)
 NowPlaying.swift    # página Tocando (Music/Spotify, capa em JPEG 220x220)
+AudioMixer.swift    # página Mixer (CoreAudio master/dispositivos, Spotify/Music e mic)
 MicControl.swift    # microfone (CoreAudio) e câmera em uso (CoreMediaIO)
 SystemStats.swift   # página Mac
 DockerFeed.swift    # página Docker (docker ps)
@@ -89,8 +94,11 @@ Os botões vêm do Mac (Ajustes). `DEFAULT_KEYS` em `firmware/src/ui.cpp` só va
 |---|---|
 | Placa → Mac | `{"t":"hello"}` a cada 1 s até o Mac responder |
 | Placa → Mac | `{"t":"press","id":"refresh"}` ou `{"t":"press","id":"key:<id>"}` quando alguém toca num botão |
-| Placa → Mac | `{"t":"page","id":"usage\|now\|keys\|mac\|docker\|clock"}` ao trocar de página e ao conectar |
-| Mac → Placa | `{"t":"layout","pages":[ids na ordem],"keys":[{"id","icon","text"}]}` ao conectar e ao mudar os Ajustes |
+| Placa → Mac | `{"t":"page","id":"usage\|now\|keys\|mac\|docker\|clock\|audio\|apps\|discord"}` ao trocar de página e ao conectar |
+| Placa → Mac | `{"t":"press","id":"vol:...\|mute:...\|outdev:...\|app:<id>\|discord:mute\|deaf\|disconnect"}` |
+| Mac → Placa | `{"t":"layout","pages":[ids na ordem],"keys":[{"id","icon","text"}],"apps":[{"id","icon","text"}]}` ao conectar e ao mudar os Ajustes |
+| Mac → Placa | `{"t":"audio","master":{"vol","muted"},"media":{"app","vol","muted"},"mic":{"vol","muted"},"activeDev","devices":[{"id","name","active"}]}` ao conectar e ao mudar volumes ou dispositivos |
+| Mac → Placa | `{"t":"discord","running","muted","deafened"}` |
 | Mac → Placa | `{"t":"usage","providers":[{"name","pct","err","busy","at","rows":[{"sec","label","pct","reset"}]}]}` |
 | Mac → Placa | `{"t":"now","app","title","artist","album","playing","pos","dur"}` e `{"t":"art","jpg":"<base64>"}` (JPEG baseline 220x220) |
 | Mac → Placa | `{"t":"mic","muted","micInUse","camInUse"}` |

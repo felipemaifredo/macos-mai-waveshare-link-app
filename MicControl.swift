@@ -70,6 +70,24 @@ final class MicControl {
         read()
     }
 
+    var volumePct: Int {
+        let volumes = Self.volumeAddresses.filter { has($0) }
+        if let v: Float32 = volumes.first.flatMap({ get($0, Float32(0)) }) {
+            return Int((v * 100).rounded())
+        }
+        return muted ? 0 : 75
+    }
+
+    func setVolume(_ pct: Int) {
+        let v = Float32(max(0, min(100, pct))) / 100.0
+        let volumes = Self.volumeAddresses.filter { has($0) }
+        for a in volumes { _ = set(a, v) }
+        if pct > 0 && muted {
+            _ = set(Self.muteAddress, UInt32(0))
+        }
+        read()
+    }
+
     // MARK: Default input device
 
     private func bind() {

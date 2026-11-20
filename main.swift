@@ -333,8 +333,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let stats = SystemStats()
     let docker = DockerFeed()
     let clock = ClockWeather()
+    let audioMixer: AudioMixer
+    let discord = DiscordControl()
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     let menu = NSMenu()
+
+    override init() {
+        self.audioMixer = AudioMixer(mic: mic, nowPlaying: nowPlaying)
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem.button?.image = NSImage(systemSymbolName: "display", accessibilityDescription: "Waveshare Link")
@@ -347,22 +354,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         nowPlaying.onChange = { [weak self] in self?.push(self?.nowPlaying.message) }
         nowPlaying.onArt = { [weak self] in self?.push(self?.nowPlaying.artMessage) }
         nowPlaying.start()
-        mic.onChange = { [weak self] in self?.push(self?.mic.message) }
+        mic.onChange = { [weak self] in
+            guard let self else { return }
+            self.push(self.mic.message)
+            self.push(self.audioMixer.message)
+            if self.discord.isRunning {
+                self.discord.setCallState(self.mic.micInUse)
+            }
+        }
         mic.start()
+        audioMixer.onChange = { [weak self] in self?.push(self?.audioMixer.message) }
+        audioMixer.start()
         stats.onSample = { [weak self] in self?.push($0) }
         docker.onChange = { [weak self] in self?.push(self?.docker.message) }
         clock.onChange = { [weak self] in self?.push(self?.clock.message) }
+        discord.onChange = { [weak self] in self?.push(self?.discord.message) }
+        discord.start()
 
         // Everything the board shows, sent again whenever it (re)connects.
         device.snapshot = { [weak self] in
             guard let self else { return [] }
             // The layout first, so the board has its tabs and keys before the data arrives.
             return [Settings.shared.layoutMessage, usage.boardMessage(), nowPlaying.message,
-                    nowPlaying.artMessage, mic.message, clock.message]
+                    nowPlaying.artMessage, mic.message, clock.message, audioMixer.message, discord.message]
         }
         device.onPress = { [weak self] id in
             if id == "refresh" { self?.usage.refresh() }
             else if id.hasPrefix("key:") { self?.pressKey(String(id.dropFirst(4))) }
+            else if id.hasPrefix("app:") { self?.openAppKey(String(id.dropFirst(4))) }
+            else if id.hasPrefix("vol:") { self?.audioMixer.handleVolumePress(String(id.dropFirst(4))) }
+            else if id.hasPrefix("mute:") { self?.audioMixer.handleMutePress(String(id.dropFirst(5))) }
+            else if id.hasPrefix("outdev:") { self?.audioMixer.handleOutDevPress(String(id.dropFirst(7))) }
+            else if id.hasPrefix("discord:") { self?.handleDiscordPress(String(id.dropFirst(8))) }
         }
         Settings.shared.onChange = { [weak self] in
             guard let self else { return }
@@ -386,6 +409,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Keys from the Apps page.
+    func openAppKey(_ id: String) {
+        if let action = Settings.shared.appKey(boardID: id) {
+            KeyRunner.run(action)
+        }
+    }
+
+    /// Discord actions.
+    func handleDiscordPress(_ action: String) {
+        switch action {
+        case "mute":
+            mic.toggle()
+            discord.toggleMute()
+            push(discord.message)
+        case "deaf":
+            discord.toggleDeafen()
+            audioMixer.toggleMasterMute()
+            if !mic.muted { mic.toggle() }
+            push(discord.message)
+        default:
+            break
+        }
+    }
+
     func push(_ msg: [String: Any]?) {
         if device.isLinked, let msg { device.send(msg) }
     }
@@ -395,12 +442,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         stats.setActive(id == "mac")
         docker.setActive(id == "docker")
         clock.setActive(id == "clock")
+        audioMixer.setActive(id == "audio")
     }
 
     func linkChanged() {
         statusItem.button?.appearsDisabled = !device.isLinked
         mic.setActive(device.isLinked)
         usage.setActive(device.isLinked && Settings.shared.isEnabled("usage"))
+        audioMixer.setActive(device.isLinked && Settings.shared.isEnabled("audio"))
         if !device.isLinked { pageChanged("") }
     }
 

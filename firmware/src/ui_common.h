@@ -48,3 +48,11 @@ void dockerShow(JsonObjectConst msg);
 
 void clockBuild(lv_obj_t* tile);
 void clockShow(JsonObjectConst msg);
+
+void audioBuild(lv_obj_t* tile);
+void audioShow(JsonObjectConst msg);
+void audioSetLinked(bool linked);
+
+void discordBuild(lv_obj_t* tile);
+void discordShow(JsonObjectConst msg);
+void discordSetLinked(bool linked);

@@ -217,7 +217,7 @@ struct AntigravityProvider: UsageProvider {
     }
 
     func headline(_ rows: [UsageRow]) -> Double? {
-        rows.map(\.usedPct).max()
+        (rows.first { $0.label == "Sessão (5h)" || $0.label.contains("5h") } ?? rows.first)?.usedPct
     }
 }
 

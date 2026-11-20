@@ -68,6 +68,8 @@ void handleLine(const String& line) {
     else if (strcmp(t, "mac") == 0) uiShowMac(msg);
     else if (strcmp(t, "docker") == 0) uiShowDocker(msg);
     else if (strcmp(t, "clock") == 0) uiShowClock(msg);
+    else if (strcmp(t, "audio") == 0) uiShowAudio(msg);
+    else if (strcmp(t, "discord") == 0) uiShowDiscord(msg);
     else if (strcmp(t, "mic") == 0) uiShowMic(msg);
     else if (strcmp(t, "layout") == 0) uiShowLayout(msg);
 }

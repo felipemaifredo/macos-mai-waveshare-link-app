@@ -27,6 +27,7 @@ enum Catalog {
     static let pages: [(id: String, name: String)] = [
         ("usage", "Uso"), ("now", "Tocando"), ("keys", "Atalhos"),
         ("mac", "Mac"), ("docker", "Docker"), ("clock", "Hora"),
+        ("audio", "Mixer"), ("apps", "Apps"), ("discord", "Discord"),
     ]
 
     static let builtins: [(id: String, name: String, icon: String)] = [
@@ -72,6 +73,15 @@ enum Catalog {
                        icon: $0.icon, kind: "builtin", value: id)
         }
     }
+
+    static let defaultApps: [KeySetting] = [
+        KeySetting(text: "Terminal", icon: "keyboard", kind: "app", value: "/System/Applications/Utilities/Terminal.app"),
+        KeySetting(text: "Safari", icon: "wifi", kind: "app", value: "/Applications/Safari.app"),
+        KeySetting(text: "VS Code", icon: "edit", kind: "app", value: "/Applications/Visual Studio Code.app"),
+        KeySetting(text: "Discord", icon: "call", kind: "app", value: "/Applications/Discord.app"),
+        KeySetting(text: "Spotify", icon: "audio", kind: "app", value: "/Applications/Spotify.app"),
+        KeySetting(text: "Finder", icon: "directory", kind: "app", value: "/System/Library/CoreServices/Finder.app"),
+    ]
     static let maxKeys = 12
 }
 
@@ -83,6 +93,7 @@ final class Settings: ObservableObject {
 
     @Published var pages: [PageSetting] { didSet { changed() } }
     @Published var keys: [KeySetting] { didSet { changed() } }
+    @Published var appKeys: [KeySetting] { didSet { changed() } }
     var onChange: () -> Void = {}
 
     private init() {
@@ -96,17 +107,23 @@ final class Settings: ObservableObject {
         self.pages = pages
         self.keys = (d.data(forKey: "keys").flatMap { try? JSONDecoder().decode([KeySetting].self, from: $0) })
             ?? Catalog.defaultKeys
+        self.appKeys = (d.data(forKey: "appKeys").flatMap { try? JSONDecoder().decode([KeySetting].self, from: $0) })
+            ?? Catalog.defaultApps
     }
 
     func isEnabled(_ page: String) -> Bool { pages.contains { $0.id == page && $0.enabled } }
 
     func key(boardID: String) -> KeySetting? { keys.first { $0.boardID == boardID } }
+    func appKey(boardID: String) -> KeySetting? { appKeys.first { $0.boardID == boardID } }
 
     var layoutMessage: [String: Any] {
         [
             "t": "layout",
             "pages": pages.filter(\.enabled).map(\.id),
             "keys": keys.prefix(Catalog.maxKeys).map {
+                ["id": $0.boardID, "icon": $0.icon, "text": SerialLink.ascii($0.text)]
+            },
+            "apps": appKeys.prefix(Catalog.maxKeys).map {
                 ["id": $0.boardID, "icon": $0.icon, "text": SerialLink.ascii($0.text)]
             },
         ]
@@ -116,6 +133,7 @@ final class Settings: ObservableObject {
         let d = UserDefaults.standard
         d.set(try? JSONEncoder().encode(pages), forKey: "pages")
         d.set(try? JSONEncoder().encode(keys), forKey: "keys")
+        d.set(try? JSONEncoder().encode(appKeys), forKey: "appKeys")
         onChange()
     }
 }
@@ -197,6 +215,7 @@ struct SettingsView: View {
         TabView {
             PagesTab(settings: settings).tabItem { Text("Abas") }
             KeysTab(settings: settings).tabItem { Text("Atalhos") }
+            AppsTab(settings: settings).tabItem { Text("Apps") }
         }
         .padding()
         .frame(width: 640, height: 480)
@@ -347,6 +366,94 @@ struct KeyEditor: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         key.value = url.path
         if key.text.isEmpty || key.text == "Novo atalho" {
+            key.text = url.deletingPathExtension().lastPathComponent
+        }
+    }
+}
+
+// MARK: - Apps Tab
+
+@MainActor
+final class AppsTabState: ObservableObject {
+    @Published var selection: String?
+}
+
+struct AppsTab: View {
+    @ObservedObject var settings: Settings
+    @StateObject private var state = AppsTabState()
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                List(selection: $state.selection) {
+                    ForEach(settings.appKeys) { key in
+                        Label(key.text.isEmpty ? "Sem nome" : key.text, systemImage: Catalog.sf(key.icon))
+                            .tag(key.id)
+                            .padding(.vertical, 2)
+                    }
+                    .onMove { settings.appKeys.move(fromOffsets: $0, toOffset: $1) }
+                }
+                .listStyle(.bordered(alternatesRowBackgrounds: true))
+                HStack {
+                    Button {
+                        let k = KeySetting(text: "Novo App", icon: "window", kind: "app", value: "")
+                        settings.appKeys.append(k)
+                        state.selection = k.id
+                    } label: { Image(systemName: "plus") }
+                    .disabled(settings.appKeys.count >= Catalog.maxKeys)
+                    Button {
+                        settings.appKeys.removeAll { $0.id == state.selection }
+                        state.selection = nil
+                    } label: { Image(systemName: "minus") }
+                    .disabled(state.selection == nil)
+                    Spacer()
+                    Text("\(settings.appKeys.count) de \(Catalog.maxKeys)").foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 230)
+
+            if let i = settings.appKeys.firstIndex(where: { $0.id == state.selection }) {
+                AppEditor(key: $settings.appKeys[i])
+            } else {
+                Text("Selecione um app para editar, ou clique em + para adicionar um novo aplicativo.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+}
+
+struct AppEditor: View {
+    @Binding var key: KeySetting
+
+    var body: some View {
+        Form {
+            TextField("Nome", text: $key.text)
+            Picker("Ícone", selection: $key.icon) {
+                ForEach(Catalog.icons, id: \.id) { icon in
+                    Label(icon.name, systemImage: icon.sf).tag(icon.id)
+                }
+            }
+            LabeledContent("Aplicativo") {
+                HStack {
+                    Text(key.value.isEmpty ? "Nenhum" : (key.value as NSString).lastPathComponent)
+                        .foregroundStyle(key.value.isEmpty ? .secondary : .primary)
+                    Button("Escolher…", action: chooseApp)
+                }
+            }
+            Text("A placa mostra o nome sem acentos.").font(.caption).foregroundStyle(.secondary)
+        }
+        .formStyle(.grouped)
+    }
+
+    private func chooseApp() {
+        let panel = NSOpenPanel()
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        key.value = url.path
+        if key.text.isEmpty || key.text == "Novo App" {
             key.text = url.deletingPathExtension().lastPathComponent
         }
     }
