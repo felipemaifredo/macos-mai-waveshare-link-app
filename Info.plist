@@ -18,6 +18,8 @@
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Mostra na tela da placa a música que está tocando no Music ou no Spotify.</string>
 	<key>LSUIElement</key>
 	<true/>
 </dict>

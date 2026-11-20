@@ -1,9 +1,9 @@
 // AI Usage display: shows Claude/Antigravity usage sent by the Mac app over USB.
 //
 // Protocol: one JSON object per line, on both USB ports (native "USB" and "UART").
-//   Board → Mac: {"t":"hello"} every second until the Mac answers; {"t":"press","id":"refresh"}
-//                and {"t":"press","id":"key:<id>"} from the deck page (see KEYS in ui.cpp)
-//   Mac → Board: {"t":"usage","providers":[…]} and {"t":"ping"} every 2 s
+//   Board → Mac: {"t":"hello"} every second until the Mac answers; {"t":"press","id":"refresh"|"key:<id>"};
+//                {"t":"page","id":…} when the visible page changes (the Mac only gathers data for it)
+//   Mac → Board: {"t":"usage"|"now"|"art"|"mac"|"docker"|"clock"|"mic",…} and {"t":"ping"} every 2 s
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <lvgl.h>
@@ -40,6 +40,15 @@ void sendPress(const char* id) {
     sendLine(out);
 }
 
+void sendPage(const char* id) {
+    JsonDocument doc;
+    doc["t"] = "page";
+    doc["id"] = id;
+    char out[64];
+    serializeJson(doc, out, sizeof(out));
+    sendLine(out);
+}
+
 void handleLine(const String& line) {
     JsonDocument doc;
     if (deserializeJson(doc, line) != DeserializationError::Ok) return;
@@ -50,8 +59,16 @@ void handleLine(const String& line) {
     if (!linked) {
         linked = true;
         uiSetLinked(true);
+        sendPage(uiCurrentPage());
     }
+    JsonObjectConst msg = doc.as<JsonObjectConst>();
     if (strcmp(t, "usage") == 0) uiShowUsage(doc["providers"].as<JsonArrayConst>());
+    else if (strcmp(t, "now") == 0) uiShowNow(msg);
+    else if (strcmp(t, "art") == 0) uiShowArt(doc["jpg"] | "");
+    else if (strcmp(t, "mac") == 0) uiShowMac(msg);
+    else if (strcmp(t, "docker") == 0) uiShowDocker(msg);
+    else if (strcmp(t, "clock") == 0) uiShowClock(msg);
+    else if (strcmp(t, "mic") == 0) uiShowMic(msg);
 }
 
 void pollPorts() {
@@ -61,7 +78,7 @@ void pollPorts() {
             if (c == '\n') {
                 handleLine(p.line);
                 p.line = "";
-            } else if (c != '\r' && p.line.length() < 16384) {
+            } else if (c != '\r' && p.line.length() < 49152) {
                 p.line += c;
             }
         }
@@ -71,14 +88,16 @@ void pollPorts() {
 } // namespace
 
 void setup() {
-    Serial.setRxBufferSize(8192);
+    Serial.setRxBufferSize(32768);
     Serial.begin(115200);
     Serial.setTxTimeoutMs(0); // never block when no host is listening
-    Serial0.setRxBufferSize(8192);
+    Serial0.setRxBufferSize(32768);
     Serial0.begin(115200);
 
+    for (Port& p : ports) p.line.reserve(49152); // cover art lines are ~20 KB; avoids regrowing per char
+
     displayBegin();
-    uiBegin(sendPress);
+    uiBegin(sendPress, sendPage);
     if (!touchFound()) sendLine("{\"t\":\"log\",\"msg\":\"GT911 touch not found\"}");
 }
 

@@ -4,15 +4,17 @@ import ServiceManagement
 // MARK: - USB display (ESP32-S3 over serial)
 
 /// Talks to the touch display over USB serial using one JSON object per line.
-/// Board → Mac: {"t":"hello"} (repeated until it hears from us), {"t":"press","id":"refresh" or "key:<deck key>"}
-/// Mac → Board: {"t":"usage",…} whenever AI Usage sends new numbers and on hello, {"t":"ping"} every 2 s.
+/// Board → Mac: {"t":"hello"} (repeated until it hears from us), {"t":"press","id":"refresh" or "key:<deck key>"},
+///              {"t":"page","id":…} when the visible page changes.
+/// Mac → Board: the current state of every page on hello, then updates as they happen; {"t":"ping"} every 2 s.
 /// Every candidate port is probed; a port that never says hello is skipped until it disappears.
 @MainActor
 final class SerialLink {
     static let prefixes = ["cu.usbmodem", "cu.usbserial", "cu.wchusbserial"]
 
-    var snapshot: () -> [String: Any] = { [:] }
+    var snapshot: () -> [[String: Any]] = { [] }
     var onPress: (String) -> Void = { _ in }
+    var onPage: (String) -> Void = { _ in }
     var onStatusChange: () -> Void = {}
     private(set) var isLinked = false
 
@@ -21,6 +23,9 @@ final class SerialLink {
     private var openedAt = Date()
     private var source: DispatchSourceRead?
     private var buffer = Data()
+    private var outbox = Data()
+    private var writer: DispatchSourceWrite?
+    private var writerRunning = false
     private var ignored: Set<String> = []
     private var timer: Timer?
 
@@ -82,10 +87,22 @@ final class SerialLink {
         src.setCancelHandler { Darwin.close(f) }
         src.resume()
         source = src
+        let w = DispatchSource.makeWriteSource(fileDescriptor: f, queue: .main)
+        w.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.flush() }
+        }
+        writer = w
+        writerRunning = false
         return true
     }
 
     private func close() {
+        if let writer {
+            if !writerRunning { writer.resume() } // a suspended source can't be cancelled
+            writer.cancel()
+        }
+        writer = nil
+        outbox.removeAll()
         source?.cancel() // closes the fd
         source = nil
         fd = -1
@@ -122,9 +139,11 @@ final class SerialLink {
                 isLinked = true
                 onStatusChange()
             }
-            send(snapshot())
+            snapshot().forEach(send)
         case "press":
             if isLinked, let id = obj["id"] as? String { onPress(id) }
+        case "page":
+            if isLinked, let id = obj["id"] as? String { onPage(id) }
         default:
             break
         }
@@ -133,13 +152,30 @@ final class SerialLink {
     func send(_ obj: [String: Any]) {
         guard fd >= 0, var data = try? JSONSerialization.data(withJSONObject: obj) else { return }
         data.append(0x0A)
-        data.withUnsafeBytes { raw in
-            var off = 0
-            var tries = 0
-            while off < raw.count && tries < 50 {
-                let w = write(fd, raw.baseAddress! + off, raw.count - off)
-                if w > 0 { off += w } else if errno == EAGAIN { tries += 1; usleep(2000) } else { return }
+        // The UART port runs at 115200 baud, so a cover (~20 KB) takes ~2 s: queue it instead of blocking.
+        if outbox.count + data.count > 512 * 1024 { return } // the board stopped reading
+        outbox.append(data)
+        flush()
+    }
+
+    private func flush() {
+        while !outbox.isEmpty {
+            let w = outbox.withUnsafeBytes { write(fd, $0.baseAddress!, $0.count) }
+            if w > 0 {
+                outbox.removeFirst(w)
+            } else if w < 0 && errno != EAGAIN && errno != EINTR {
+                outbox.removeAll()
+            } else {
+                break
             }
+        }
+        // Wake up when the port can take more, and only then.
+        if outbox.isEmpty, writerRunning {
+            writer?.suspend()
+            writerRunning = false
+        } else if !outbox.isEmpty, !writerRunning {
+            writer?.resume()
+            writerRunning = true
         }
     }
 
@@ -272,6 +308,11 @@ final class UsageFeed {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let device = SerialLink()
     let usage = UsageFeed()
+    let nowPlaying = NowPlaying()
+    let mic = MicControl()
+    let stats = SystemStats()
+    let docker = DockerFeed()
+    let clock = ClockWeather()
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     let menu = NSMenu()
 
@@ -280,26 +321,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         menu.autoenablesItems = false
         statusItem.menu = menu
-        updateIcon()
+        statusItem.button?.appearsDisabled = true
 
-        usage.onChange = { [weak self] in self?.pushUsage() }
+        usage.onChange = { [weak self] in self?.push(self?.usage.boardMessage()) }
         usage.start()
+        nowPlaying.onChange = { [weak self] in self?.push(self?.nowPlaying.message) }
+        nowPlaying.onArt = { [weak self] in self?.push(self?.nowPlaying.artMessage) }
+        nowPlaying.start()
+        mic.onChange = { [weak self] in self?.push(self?.mic.message) }
+        mic.start()
+        stats.onSample = { [weak self] in self?.push($0) }
+        docker.onChange = { [weak self] in self?.push(self?.docker.message) }
+        clock.onChange = { [weak self] in self?.push(self?.clock.message) }
 
-        device.snapshot = { [weak self] in self?.usage.boardMessage() ?? ["t": "ping"] }
+        // Everything the board shows, sent again whenever it (re)connects.
+        device.snapshot = { [weak self] in
+            guard let self else { return [] }
+            return [usage.boardMessage(), nowPlaying.message, nowPlaying.artMessage, mic.message, clock.message]
+                .compactMap { $0 }
+        }
         device.onPress = { [weak self] id in
             if id == "refresh" { self?.usage.refresh() }
+            else if id == "key:mic" { self?.mic.toggle() }
             else if id.hasPrefix("key:") { DeckActions.run(String(id.dropFirst(4))) }
         }
-        device.onStatusChange = { [weak self] in self?.updateIcon() }
+        device.onPage = { [weak self] id in self?.pageChanged(id) }
+        device.onStatusChange = { [weak self] in self?.linkChanged() }
         device.start()
     }
 
-    func pushUsage() {
-        if device.isLinked, let msg = usage.boardMessage() { device.send(msg) }
+    func push(_ msg: [String: Any]?) {
+        if device.isLinked, let msg { device.send(msg) }
     }
 
-    func updateIcon() {
+    /// Only the visible page's data is gathered, so the hidden pages cost nothing.
+    func pageChanged(_ id: String) {
+        stats.setActive(id == "mac")
+        docker.setActive(id == "docker")
+        clock.setActive(id == "clock")
+    }
+
+    func linkChanged() {
         statusItem.button?.appearsDisabled = !device.isLinked
+        mic.setActive(device.isLinked)
+        if !device.isLinked { pageChanged("") }
     }
 
     // Rebuilt every time it opens, so it always shows the current state.
