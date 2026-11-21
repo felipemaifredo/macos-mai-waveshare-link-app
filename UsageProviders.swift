@@ -16,6 +16,8 @@ enum FetchError: Error {
     case expired
     case notRunning
     case http(Int)
+    /// HTTP 429: too many requests. Ask again only after this date.
+    case rateLimited(until: Date)
     case badResponse
     case network(String)
 }
@@ -67,6 +69,11 @@ func performJSON(_ req: URLRequest) async throws -> [String: Any] {
     }
     guard let http = resp as? HTTPURLResponse else { throw FetchError.badResponse }
     if http.statusCode == 401 || http.statusCode == 403 { throw FetchError.expired }
+    if http.statusCode == 429 {
+        // Retry-After in seconds when the API sends it; otherwise wait 15 min.
+        let wait = http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init) ?? 15 * 60
+        throw FetchError.rateLimited(until: Date().addingTimeInterval(max(wait, 60)))
+    }
     guard http.statusCode == 200 else { throw FetchError.http(http.statusCode) }
     guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
         throw FetchError.badResponse

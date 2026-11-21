@@ -232,6 +232,9 @@ enum DeckActions {
 
 /// Fetches Claude and Antigravity usage for the board's "Uso" page: on connect, every 5 min
 /// and when the board's ↻ is pressed. Nothing is fetched while the board is disconnected.
+/// The Claude API limits how often it may be asked (HTTP 429), and with Wi-Fi and host switching
+/// this Mac goes on and off the board's screen often: coming back reuses data younger than 5 min,
+/// ↻ waits at least 1 min between requests, and after a 429 nothing is asked until the API allows.
 ///   {"t":"usage","providers":[{"name","pct","err","busy","at","rows":[{"sec","label","pct","reset"}]}]}
 @MainActor
 final class UsageFeed {
@@ -241,10 +244,13 @@ final class UsageFeed {
         var error: String?
         var updatedAt: Date?
         var busy = false
+        var askedAt: Date?
+        var blockedUntil: Date?
         init(_ p: UsageProvider) { provider = p }
     }
 
     static let interval: TimeInterval = 300
+    static let minManualGap: TimeInterval = 60
 
     var onChange: () -> Void = {}
     private let entries = [Entry(ClaudeProvider()), Entry(AntigravityProvider())]
@@ -252,28 +258,45 @@ final class UsageFeed {
 
     func setActive(_ on: Bool) {
         if on, timer == nil {
-            refresh()
+            // Back on screen: data from the last few minutes is still good.
+            let newest = entries.compactMap(\.askedAt).max()
+            if let newest, Date().timeIntervalSince(newest) < Self.interval {
+                schedule(in: Self.interval - Date().timeIntervalSince(newest))
+                onChange()
+            } else {
+                refresh()
+            }
         } else if !on {
             timer?.invalidate()
             timer = nil
         }
     }
 
-    func refresh() {
+    private func schedule(in seconds: TimeInterval) {
         timer?.invalidate()
-        let t = Timer(timeInterval: Self.interval, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: max(seconds, 1), repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
+    }
+
+    /// `manual`: the board's ↻.
+    func refresh(manual: Bool = false) {
+        schedule(in: Self.interval)
+        let now = Date()
 
         for e in entries where !e.busy {
+            if let until = e.blockedUntil, now < until { continue } // the API said to wait
+            if manual, let asked = e.askedAt, now.timeIntervalSince(asked) < Self.minManualGap { continue }
             e.busy = true
+            e.askedAt = now
             Task {
                 do {
                     e.rows = try await e.provider.fetch()
                     e.updatedAt = Date()
                     e.error = nil
+                    e.blockedUntil = nil
                 } catch FetchError.notRunning {
                     e.rows = []
                     e.error = "Antigravity não está aberto"
@@ -281,6 +304,12 @@ final class UsageFeed {
                     e.error = e.provider.expiredMessage
                 } catch FetchError.noCredentials {
                     e.error = "Credenciais do Claude Code não encontradas"
+                } catch FetchError.rateLimited(let until) {
+                    // Keep showing the last numbers.
+                    e.blockedUntil = until
+                    let f = DateFormatter()
+                    f.dateFormat = "HH:mm"
+                    e.error = "Limite de consultas da API. Tento de novo as \(f.string(from: until))"
                 } catch FetchError.http(let code) {
                     e.error = "Erro HTTP \(code)"
                 } catch FetchError.network(let msg) {
@@ -374,7 +403,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     nowPlaying.artMessage, mic.message, clock.message, audioMixer.message, discord.message]
         }
         device.onPress = { [weak self] id in
-            if id == "refresh" { self?.usage.refresh() }
+            if id == "refresh" { self?.usage.refresh(manual: true) }
             else if id.hasPrefix("key:") { self?.pressKey(String(id.dropFirst(4))) }
             else if id.hasPrefix("app:") { self?.openAppKey(String(id.dropFirst(4))) }
             else if id.hasPrefix("vol:") { self?.audioMixer.handleVolumePress(String(id.dropFirst(4))) }
