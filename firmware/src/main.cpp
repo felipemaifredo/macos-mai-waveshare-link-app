@@ -552,9 +552,12 @@ void logHeap(const char* stage) {
 
 void setup() {
     // Internal RAM is scarce and the Wi-Fi driver must have it. By default only blocks of 4 KB or
-    // more go to PSRAM, so the thousands of small LVGL objects ate the internal heap and Wi-Fi
-    // failed to start (ESP_ERR_NO_MEM). From 64 bytes up, prefer PSRAM.
-    heap_caps_malloc_extmem_enable(64);
+    // more go to PSRAM, and the LVGL objects ate the internal heap (Wi-Fi failed with ESP_ERR_NO_MEM).
+    // Sending everything from 64 bytes up to PSRAM fixed that but broke the picture: the RGB panel
+    // streams its frame from PSRAM, and LVGL hammering PSRAM on every redraw starved it (lines
+    // glitching now and then). Middle ground: small objects (the many lv_obj/styles touched on every
+    // redraw) stay internal, bigger blocks go to PSRAM.
+    heap_caps_malloc_extmem_enable(1024);
 
     // USB CDC has flow control and the UART is slow (11.5 KB/s): 8 KB is plenty for the loop's pace.
     Serial.setRxBufferSize(8192);

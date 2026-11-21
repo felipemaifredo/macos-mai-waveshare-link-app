@@ -110,7 +110,10 @@ void touchRead(lv_indev_t*, lv_indev_data_t* data) {
 void panelBegin() {
     esp_lcd_rgb_panel_config_t c = {};
     c.clk_src = LCD_CLK_SRC_DEFAULT;
-    c.timings.pclk_hz = 16 * 1000 * 1000;
+    // 12.5 MHz (~30 fps: 824 x 496 clocks per frame) instead of the demo's 16 (~39 fps). The panel
+    // streams its frame from PSRAM, and with Wi-Fi on (its buffers live in PSRAM) 16 MHz left too
+    // little PSRAM bandwidth: lines glitched now and then. 30 fps is plenty for this UI.
+    c.timings.pclk_hz = 12500 * 1000;
     c.timings.h_res = W;
     c.timings.v_res = H;
     c.timings.hsync_pulse_width = 4;
@@ -123,7 +126,10 @@ void panelBegin() {
     c.data_width = 16;
     c.bits_per_pixel = 16;
     c.num_fbs = 1;
-    c.bounce_buffer_size_px = W * 10; // keeps the image stable while PSRAM is busy
+    // Keeps the image stable while PSRAM is busy (Wi-Fi, LVGL): the panel reads from these internal
+    // buffers, refilled from the PSRAM frame. Two of them: 2 x 16 lines x 1600 B = 51 KB of internal RAM.
+    // Must divide the frame evenly (480 / 16 = 30).
+    c.bounce_buffer_size_px = W * 16;
     c.dma_burst_size = 64;
     c.hsync_gpio_num = 46;
     c.vsync_gpio_num = 3;
@@ -163,7 +169,9 @@ void displayBegin() {
 
     lv_display_t* disp = lv_display_create(W, H);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
-    const size_t bytes = W * 40 * 2;
+    // 20 lines per buffer (32 KB each, internal RAM): 40 lines left too little internal RAM for
+    // Wi-Fi and for keeping LVGL's objects out of PSRAM (see setup() in main.cpp).
+    const size_t bytes = W * 20 * 2;
     void* b1 = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     void* b2 = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     lv_display_set_buffers(disp, b1, b2, bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);

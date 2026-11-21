@@ -53,6 +53,9 @@ void netBegin() {
     snprintf(boardId, sizeof(boardId), "%02X%02X%02X%02X%02X%02X", (uint8_t)mac, (uint8_t)(mac >> 8),
              (uint8_t)(mac >> 16), (uint8_t)(mac >> 24), (uint8_t)(mac >> 32), (uint8_t)(mac >> 40));
 
+#ifdef WAVESHARE_NO_WIFI
+    return; // diagnostic build: the radio stays off (the saved network is kept)
+#endif
     loadCredentials();
     WiFi.persistent(false); // the credentials live in our own NVS namespace
     WiFi.setHostname("waveshare"); // before mode(): the core names the interface when it creates it
