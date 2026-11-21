@@ -1,14 +1,17 @@
 import Foundation
 
 /// Time and weather for the "Hora" page.
-///   {"t":"clock","epoch","tz","city","temp","min","max","code"}   (weather fields only once fetched)
+///   {"t":"clock","epoch","tz","city","lat","lon","temp","min","max","code"}   (weather fields only once fetched)
+/// The board also fetches the time and weather on its own over Wi-Fi; lat/lon tell it where.
 /// The board keeps the time itself; the Mac resyncs it on connect and every minute while the page
 /// is on screen. The weather (Open-Meteo, no key) is fetched at most every 30 min, and only while
 /// the page is on screen.
 @MainActor
 final class ClockWeather {
     static let city = "Cachoeiro de Itapemirim"
-    static let url = URL(string: "https://api.open-meteo.com/v1/forecast?latitude=-20.85&longitude=-41.11"
+    static let latitude = -20.85
+    static let longitude = -41.11
+    static let url = URL(string: "https://api.open-meteo.com/v1/forecast?latitude=\(latitude)&longitude=\(longitude)"
         + "&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min"
         + "&timezone=auto&forecast_days=1")!
     static let maxAge: TimeInterval = 30 * 60
@@ -25,6 +28,9 @@ final class ClockWeather {
             "t": "clock",
             "epoch": Int(Date().timeIntervalSince1970),
             "tz": TimeZone.current.secondsFromGMT(),
+            "city": Self.city,
+            "lat": Self.latitude,
+            "lon": Self.longitude,
         ]
         m.merge(weather) { $1 }
         return m

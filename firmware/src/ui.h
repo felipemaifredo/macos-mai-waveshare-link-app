@@ -37,5 +37,7 @@ void uiSetHostHandlers(HostSelectHandler onSelect, VoidHandler onPairCancel, Voi
 void uiSetHosts(const UiHost* hosts, int count, int active);
 // One line about the network for the host list, e.g. "Wi-Fi: Casa  192.168.0.20".
 void uiSetNet(const char* text);
+// The full-screen clock shown while no computer is connected.
+void uiSetStandby(bool on);
 // Shows the pairing code a new host must type. nullptr hides it.
 void uiShowPairCode(const char* code, const char* hostName);

@@ -10,6 +10,8 @@ A tela tem até sete páginas. Para trocar de página, use o seletor no topo ou 
 - **Mac**: CPU (com os últimos 2 minutos), memória, bateria e rede.
 - **Docker**: os containers, com estado, imagem e status. Só leitura.
 - **Hora**: relógio, data e o tempo em Cachoeiro de Itapemirim (Open-Meteo).
+
+**Relógio sem computador**: com Wi-Fi, a placa acerta a hora sozinha (NTP) e busca o tempo a cada 30 min (Open-Meteo por HTTP; o fuso vem da resposta). Enquanto nenhum computador está conectado, ela mostra o relógio em tela cheia; tocar nele abre a lista de computadores. O local do tempo vem do Mac ou do PC (`lat`/`lon`/`city` na mensagem `clock`) e fica gravado na placa.
 - **Mixer**: volume independente com sliders verticais táteis para Saída Master do Mac, Mídia (Spotify/Music) e Microfone, além de seletor rápido do dispositivo de saída de áudio (Speakers, AirPods, Fone, etc.).
 - **Apps**: grid de até 12 botões customizáveis para abrir aplicativos no Mac (App Launcher).
 - **Discord**: controle dedicado de chamada com status, botão Mutar/Desmutar, Ensurdecer (Deafen) e Desconectar.
@@ -139,7 +141,7 @@ Hosts v1 (sem `auth`) funcionam só pelo USB: qualquer mensagem liga o host. Pel
 | Mac → Placa | `{"t":"mic","muted","micInUse","camInUse"}` |
 | Mac → Placa | `{"t":"mac","cpu","mem","memUsed","memTotal","bat","charging","ac","rx","tx"}` a cada 2 s, só com a página Mac aberta |
 | Mac → Placa | `{"t":"docker","up","containers":[{"name","image","state","status"}]}` a cada 5 s, só com a página Docker aberta |
-| Mac → Placa | `{"t":"clock","epoch","tz","city","temp","min","max","code"}` ao conectar e a cada minuto com a página Hora aberta |
+| Mac → Placa | `{"t":"clock","epoch","tz","city","lat","lon","temp","min","max","code"}` ao conectar e a cada minuto com a página Hora aberta. `epoch` acerta o relógio da placa; `lat`/`lon`/`city` dizem onde buscar o tempo |
 | Mac → Placa | `{"t":"ping"}` a cada 2 s. Se a placa ficar 8 s sem receber nada de um host, ele sai da lista |
 
 O app testa as portas `/dev/cu.usbmodem*`, `cu.usbserial*` e `cu.wchusbserial*`. Uma porta que não responde `hello` em 6 s é ignorada até ser desconectada. Ao conectar, o Mac reenvia o estado de todas as páginas. As mensagens saem por uma fila, porque uma capa leva uns 3 s pela porta UART. Os textos chegam sem acentos porque as fontes da placa só têm ASCII.

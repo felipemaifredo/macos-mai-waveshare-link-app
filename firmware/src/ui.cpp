@@ -451,6 +451,8 @@ lv_obj_t* hostPopupNet = nullptr;
 lv_obj_t* forgetLabel = nullptr;
 bool forgetArmed = false;
 lv_obj_t* pairOverlay = nullptr;
+lv_obj_t* standby = nullptr; // full-screen clock while no computer is connected
+lv_obj_t* standbyStatus = nullptr;
 
 // Dims the screen; the dialogs sit on it. Deleted with lv_obj_delete_async because they
 // close from their own buttons' callbacks.
@@ -554,6 +556,24 @@ void openHostPopup(lv_event_t*) {
     lv_obj_set_style_text_color(forgetLabel, DIM, 0);
     lv_obj_add_event_cb(forget, onForgetHosts, LV_EVENT_CLICKED, nullptr);
     fillHostPopup();
+}
+
+// The clock on its own (time over NTP, weather fetched by the board), over everything else while
+// no computer is connected. Created before any dialog, so the dialogs (also on the top layer) stay
+// above it. A tap opens the computer list (network state, pairings).
+void makeStandby() {
+    standby = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(standby);
+    lv_obj_set_size(standby, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(standby, BG, 0);
+    lv_obj_set_style_bg_opa(standby, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(standby, 24, 0);
+    lv_obj_add_flag(standby, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(standby, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(standby, openHostPopup, LV_EVENT_CLICKED, nullptr);
+    clockBuild(standby);
+    standbyStatus = label(standby, &lv_font_montserrat_16, DIM, "");
+    lv_obj_set_style_margin_top(standbyStatus, 28, 0);
 }
 
 void makeHostChip(lv_obj_t* header) {
@@ -863,6 +883,7 @@ void uiBegin(PressHandler onPress, PageHandler onPage) {
 
     currentPage = -1; // so applyPages reports the first page
     applyPages();
+    makeStandby();
     uiSetLinked(false);
 }
 
@@ -1043,6 +1064,11 @@ void uiSetHosts(const UiHost* hosts, int count, int active) {
 void uiSetNet(const char* text) {
     snprintf(netText, sizeof(netText), "%s", text);
     if (hostPopupNet) lv_label_set_text(hostPopupNet, netText);
+    if (standbyStatus) lv_label_set_text_fmt(standbyStatus, "Nenhum computador conectado   |   %s", netText);
 }
 
 void uiShowPairCode(const char* code, const char* hostName) { showPairCode(code, hostName); }
+
+void uiSetStandby(bool on) {
+    if (standby) showHidden(standby, on);
+}

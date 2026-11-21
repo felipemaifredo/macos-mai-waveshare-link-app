@@ -19,6 +19,7 @@
 
 #include "display.h"
 #include "net.h"
+#include "standalone.h"
 #include "ui.h"
 
 namespace {
@@ -256,6 +257,7 @@ void activate(int i) {
         sendPage(hosts[i], uiCurrentPage());
     }
     publishHosts();
+    uiSetStandby(active < 0);
 }
 
 void link(int i) {
@@ -577,6 +579,7 @@ void setup() {
 
     // Wi-Fi first, while internal RAM is still free; the UI's objects can live in PSRAM.
     loadPaired();
+    standaloneBegin();
     netBegin();
     displayBegin();
     uiBegin(pressToActive, pageToActive);
@@ -590,6 +593,7 @@ void setup() {
 
 void loop() {
     netLoop();
+    standaloneLoop();
     acceptClients();
     pollHosts();
 

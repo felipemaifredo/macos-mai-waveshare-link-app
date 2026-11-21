@@ -48,6 +48,8 @@ void dockerShow(JsonObjectConst msg);
 
 void clockBuild(lv_obj_t* tile);
 void clockShow(JsonObjectConst msg);
+void clockShowWeather(float temp, float min, float max, int code, const char* city);
+void clockRefresh(); // the time or the offset changed
 
 void audioBuild(lv_obj_t* tile);
 void audioShow(JsonObjectConst msg);

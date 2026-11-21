@@ -32,6 +32,10 @@ sealed class ClockFeed
                 ["t"] = "clock",
                 ["epoch"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 ["tz"] = (int)TimeZoneInfo.Local.GetUtcOffset(DateTime.Now).TotalSeconds,
+                // The board fetches the time and weather on its own over Wi-Fi; this tells it where.
+                ["city"] = Text.Ascii(config.City),
+                ["lat"] = config.Latitude,
+                ["lon"] = config.Longitude,
             };
             foreach (var kv in weather) m[kv.Key] = kv.Value?.DeepClone();
             return m;
