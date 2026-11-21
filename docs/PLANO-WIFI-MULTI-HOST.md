@@ -1,6 +1,6 @@
 # Plano: Wi-Fi e vários computadores (Mac + Windows)
 
-> Status: **Etapas 1 a 3 implementadas (firmware + app do Mac), falta testar na placa.** Windows (Etapa 4) não iniciado. Criado em 2026-11-20.
+> Status: **Etapas 1 a 3 implementadas e testadas na placa (Wi-Fi em rede oculta, pareamento do Mac).** Etapa 4 (Windows): código escrito em `windows/` sem compilar; continuar por `docs/ROTEIRO-WINDOWS.md`. Criado em 2026-11-20.
 >
 > O que mudou em relação ao plano:
 > - **Transporte: TCP puro (porta 7270) em vez de WebSocket.** As mensagens continuam iguais (uma linha JSON por mensagem); TCP tem menos código na placa e no Windows (`TcpClient`), e não há navegador envolvido.

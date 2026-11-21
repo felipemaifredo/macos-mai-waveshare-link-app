@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Debug (dotnet run): console window with the log. Release: tray only. -->
+    <OutputType Condition="'$(Configuration)' == 'Release'">WinExe</OutputType>
+    <OutputType Condition="'$(Configuration)' != 'Release'">Exe</OutputType>
+    <!-- 10.0.19041 brings the WinRT APIs (Windows.Media.Control for "Tocando"). -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>WaveshareLink</AssemblyName>
+    <RootNamespace>WaveshareLink</RootNamespace>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Core Audio (volume, sessions per app, devices). -->
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+  </ItemGroup>
+
+</Project>

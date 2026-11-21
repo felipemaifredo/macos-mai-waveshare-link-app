@@ -80,6 +80,7 @@ ClockWeather.swift  # página Hora (hora + Open-Meteo)
 Settings.swift      # Ajustes: abas, atalhos, apps e conexão (modelo, janela SwiftUI, execução dos atalhos)
 Info.plist          # bundle "Waveshare Link" (local.waveshare-link), LSUIElement (sem ícone no Dock)
 build.sh            # compila, empacota, assina ad-hoc e instala em /Applications
+windows/            # app do Windows (C# / .NET 8, bandeja), mesmo protocolo; ver windows/README.md
 firmware/           # firmware da placa (PlatformIO + Arduino + LVGL 9): main.cpp (hosts, pareamento), net.cpp (Wi-Fi, servidor, mDNS),
                     # ui.cpp (topo, seletor de computador, Uso, Atalhos) e ui_*.cpp (demais páginas)
 ```
