@@ -3,24 +3,22 @@ import ServiceManagement
 
 // MARK: - USB display (ESP32-S3 over serial)
 
-/// Talks to the touch display over USB serial using one JSON object per line.
-/// Board → Mac: {"t":"hello"} (repeated until it hears from us), {"t":"press","id":"refresh" or "key:<deck key>"},
-///              {"t":"page","id":…} when the visible page changes.
-/// Mac → Board: the current state of every page on hello, then updates as they happen; {"t":"ping"} every 2 s.
+/// The USB transport: one JSON object per line. It only finds the board and moves messages;
+/// BoardLink (BoardLink.swift) does the handshake.
 /// Every candidate port is probed; a port that never says hello is skipped until it disappears.
 @MainActor
 final class SerialLink {
     static let prefixes = ["cu.usbmodem", "cu.usbserial", "cu.wchusbserial"]
 
-    var snapshot: () -> [[String: Any]] = { [] }
-    var onPress: (String) -> Void = { _ in }
-    var onPage: (String) -> Void = { _ in }
-    var onStatusChange: () -> Void = {}
-    private(set) var isLinked = false
+    var onMessage: ([String: Any]) -> Void = { _ in }
+    var onClose: () -> Void = {}
+    /// The port answered with a hello: it is our board.
+    private(set) var confirmed = false
 
     private var fd: Int32 = -1
     private(set) var path: String?
     private var openedAt = Date()
+    private var probed = false
     private var source: DispatchSourceRead?
     private var buffer = Data()
     private var outbox = Data()
@@ -28,6 +26,8 @@ final class SerialLink {
     private var writerRunning = false
     private var ignored: Set<String> = []
     private var timer: Timer?
+
+    var isOpen: Bool { fd >= 0 }
 
     func start() {
         let t = Timer(timeInterval: 2, repeats: true) { _ in
@@ -52,11 +52,16 @@ final class SerialLink {
         let present = Set(candidates())
         ignored.formIntersection(present)
         if fd >= 0 {
-            if isLinked {
-                send(["t": "ping"])
-            } else if Date().timeIntervalSince(openedAt) > 6, let path {
+            guard !confirmed else { return }
+            let age = Date().timeIntervalSince(openedAt)
+            if age > 6, let path {
                 ignored.insert(path) // not our board
                 close()
+            } else if age > 1.5, !probed {
+                // The board only says hello while nobody is linked on this port; after an app
+                // restart it may still think we are. Ask for a hello.
+                probed = true
+                send(["t": "probe"])
             }
             return
         }
@@ -79,6 +84,8 @@ final class SerialLink {
         fd = f
         path = p
         openedAt = Date()
+        probed = false
+        confirmed = false
         buffer.removeAll()
         let src = DispatchSource.makeReadSource(fileDescriptor: f, queue: .main)
         src.setEventHandler { [weak self] in
@@ -108,10 +115,9 @@ final class SerialLink {
         fd = -1
         path = nil
         buffer.removeAll()
-        if isLinked {
-            isLinked = false
-            onStatusChange()
-        }
+        let wasConfirmed = confirmed
+        confirmed = false
+        if wasConfirmed { onClose() }
     }
 
     private func readAvailable() {
@@ -133,20 +139,9 @@ final class SerialLink {
     private func handle(_ line: Data) {
         guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
               let type = obj["t"] as? String else { return } // boot logs and other noise
-        switch type {
-        case "hello":
-            // State first (the layout leads it), then the status change, which starts the feeds.
-            let wasLinked = isLinked
-            isLinked = true
-            snapshot().forEach(send)
-            if !wasLinked { onStatusChange() }
-        case "press":
-            if isLinked, let id = obj["id"] as? String { onPress(id) }
-        case "page":
-            if isLinked, let id = obj["id"] as? String { onPage(id) }
-        default:
-            break
-        }
+        if type == "hello" { confirmed = true }
+        guard confirmed else { return }
+        onMessage(obj)
     }
 
     func send(_ obj: [String: Any]) {
@@ -326,7 +321,7 @@ final class UsageFeed {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    let device = SerialLink()
+    let device = BoardLink()
     let usage = UsageFeed()
     let nowPlaying = NowPlaying()
     let mic = MicControl()
@@ -371,7 +366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         discord.onChange = { [weak self] in self?.push(self?.discord.message) }
         discord.start()
 
-        // Everything the board shows, sent again whenever it (re)connects.
+        // Everything the board shows, sent again whenever this Mac goes (back) on the board's screen.
         device.snapshot = { [weak self] in
             guard let self else { return [] }
             // The layout first, so the board has its tabs and keys before the data arrives.
@@ -390,8 +385,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Settings.shared.onChange = { [weak self] in
             guard let self else { return }
             push(Settings.shared.layoutMessage)
-            usage.setActive(device.isLinked && Settings.shared.isEnabled("usage"))
+            usage.setActive(device.isLive && Settings.shared.isEnabled("usage"))
         }
+        Settings.shared.onLinkChange = { [weak self] in self?.device.applySettings() }
+        Settings.shared.onRename = { [weak self] in self?.device.renamed() }
         device.onPage = { [weak self] id in self?.pageChanged(id) }
         device.onStatusChange = { [weak self] in self?.linkChanged() }
         device.start()
@@ -434,7 +431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func push(_ msg: [String: Any]?) {
-        if device.isLinked, let msg { device.send(msg) }
+        if device.isLive, let msg { device.send(msg) }
     }
 
     /// Only the visible page's data is gathered, so the hidden pages cost nothing.
@@ -445,22 +442,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         audioMixer.setActive(id == "audio")
     }
 
+    /// Connected or not, and on the board's screen or not (another host may be there):
+    /// the collectors only run while this Mac is on screen.
     func linkChanged() {
-        statusItem.button?.appearsDisabled = !device.isLinked
-        mic.setActive(device.isLinked)
-        usage.setActive(device.isLinked && Settings.shared.isEnabled("usage"))
-        audioMixer.setActive(device.isLinked && Settings.shared.isEnabled("audio"))
-        if !device.isLinked { pageChanged("") }
+        let live = device.isLive
+        statusItem.button?.appearsDisabled = !live
+        mic.setActive(live)
+        usage.setActive(live && Settings.shared.isEnabled("usage"))
+        audioMixer.setActive(live && Settings.shared.isEnabled("audio"))
+        if !live { pageChanged("") }
     }
 
     // Rebuilt every time it opens, so it always shows the current state.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        if device.isLinked, let path = device.path {
-            menu.addItem(disabled("Placa: conectada (\((path as NSString).lastPathComponent))"))
+        let status = LinkStatus.shared
+        if let via = status.via {
+            let addr = status.address.map { " (\($0))" } ?? ""
+            menu.addItem(disabled("Placa: conectada por \(via)\(addr)"))
+            if !status.active {
+                menu.addItem(disabled("Outro computador está na tela da placa"))
+                menu.addItem(disabled("Toque no nome no topo da placa para trocar"))
+            }
+        } else if Settings.shared.useWifi {
+            menu.addItem(disabled("Placa: procurando na rede e no USB…"))
         } else {
             menu.addItem(disabled("Placa: procurando no USB…"))
+        }
+        if let net = boardNetLine() { menu.addItem(disabled(net)) }
+        if let problem = status.problem { menu.addItem(disabled("⚠︎ \(problem)")) }
+        if status.needsPairing && status.via != "Wi-Fi" {
+            let pair = NSMenuItem(title: "Parear pelo Wi-Fi…", action: #selector(pairWifi), keyEquivalent: "")
+            pair.target = self
+            menu.addItem(pair)
         }
 
         menu.addItem(.separator())
@@ -479,6 +494,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let i = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         i.isEnabled = false
         return i
+    }
+
+    /// The board's own Wi-Fi, as it last reported it.
+    func boardNetLine() -> String? {
+        let n = LinkStatus.shared.boardNet
+        guard let state = n["state"] as? String else { return nil }
+        let ssid = n["ssid"] as? String ?? ""
+        switch state {
+        case "connected":
+            let rssi = n["rssi"] as? Int ?? 0
+            return "Wi-Fi da placa: \(ssid) (\(n["ip"] as? String ?? ""), \(rssi) dBm)"
+        case "connecting":
+            if let why = n["why"] as? String, !why.isEmpty { return "Wi-Fi da placa: \(why)" }
+            return "Wi-Fi da placa: conectando a \(ssid)…"
+        default:
+            return "Wi-Fi da placa: não configurado"
+        }
+    }
+
+    @objc func pairWifi() {
+        LinkStatus.shared.problem = nil
+        device.startPairing()
     }
 
     @objc func openSettings() {

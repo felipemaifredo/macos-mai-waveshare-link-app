@@ -96,6 +96,17 @@ final class Settings: ObservableObject {
     @Published var appKeys: [KeySetting] { didSet { changed() } }
     var onChange: () -> Void = {}
 
+    // Connection (Settings → Conexão). Saved on their own: they don't change the board's layout.
+    @Published var useWifi: Bool { didSet { UserDefaults.standard.set(useWifi, forKey: "useWifi"); onLinkChange() } }
+    /// Typed address for networks where Bonjour does not get through. Empty: find the board by itself.
+    @Published var boardAddress: String {
+        didSet { UserDefaults.standard.set(boardAddress, forKey: "boardAddress"); onLinkChange() }
+    }
+    /// How this Mac is called in the board's host list.
+    @Published var hostName: String { didSet { UserDefaults.standard.set(hostName, forKey: "hostName"); onRename() } }
+    var onLinkChange: () -> Void = {}
+    var onRename: () -> Void = {}
+
     private init() {
         let d = UserDefaults.standard
         var pages = (d.data(forKey: "pages").flatMap { try? JSONDecoder().decode([PageSetting].self, from: $0) }) ?? []
@@ -109,6 +120,9 @@ final class Settings: ObservableObject {
             ?? Catalog.defaultKeys
         self.appKeys = (d.data(forKey: "appKeys").flatMap { try? JSONDecoder().decode([KeySetting].self, from: $0) })
             ?? Catalog.defaultApps
+        self.useWifi = d.object(forKey: "useWifi") as? Bool ?? true
+        self.boardAddress = d.string(forKey: "boardAddress") ?? ""
+        self.hostName = d.string(forKey: "hostName") ?? "Mac"
     }
 
     func isEnabled(_ page: String) -> Bool { pages.contains { $0.id == page && $0.enabled } }
@@ -216,9 +230,10 @@ struct SettingsView: View {
             PagesTab(settings: settings).tabItem { Text("Abas") }
             KeysTab(settings: settings).tabItem { Text("Atalhos") }
             AppsTab(settings: settings).tabItem { Text("Apps") }
+            ConnectionTab(settings: settings, status: .shared).tabItem { Text("Conexão") }
         }
         .padding()
-        .frame(width: 640, height: 480)
+        .frame(width: 640, height: 520)
     }
 }
 
@@ -455,6 +470,109 @@ struct AppEditor: View {
         key.value = url.path
         if key.text.isEmpty || key.text == "Novo App" {
             key.text = url.deletingPathExtension().lastPathComponent
+        }
+    }
+}
+
+// MARK: - Conexão
+
+/// The Conexão tab's own state (see KeysTabState for why it is not @State).
+@MainActor
+final class ConnectionTabState: ObservableObject {
+    @Published var ssid = UserDefaults.standard.string(forKey: "boardSSID") ?? ""
+    @Published var pass = ""
+    @Published var feedback: String?
+}
+
+struct ConnectionTab: View {
+    @ObservedObject var settings: Settings
+    @ObservedObject var status: LinkStatus
+    @StateObject private var state = ConnectionTabState()
+
+    var body: some View {
+        Form {
+            Section {
+                Text(linkText).fontWeight(.medium)
+                if let problem = status.problem {
+                    Text(problem).foregroundStyle(.orange)
+                }
+                Toggle("Conectar à placa pela rede Wi-Fi", isOn: $settings.useWifi)
+                TextField("Nome deste Mac na placa", text: $settings.hostName)
+                TextField("Endereço da placa (opcional)", text: $settings.boardAddress, prompt: Text("encontrar sozinho"))
+                    .disabled(!settings.useWifi)
+                Text("Deixe o endereço vazio para achar a placa sozinho (Bonjour). Preencha com o IP se a rede bloquear essa busca.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if status.needsPairing && status.via != "Wi-Fi" {
+                    Button("Parear pelo Wi-Fi…") {
+                        status.problem = nil
+                        (NSApp.delegate as? AppDelegate)?.device.startPairing()
+                    }
+                }
+            }
+
+            Section("Rede Wi-Fi da placa") {
+                Text(boardNetText).foregroundStyle(.secondary)
+                TextField("Nome da rede (SSID)", text: $state.ssid)
+                SecureField("Senha", text: $state.pass)
+                Text("Redes ocultas funcionam: digite o nome exato da rede, com maiúsculas e minúsculas. A placa só usa redes de 2,4 GHz. Os dados vão pelo cabo USB e ficam gravados na placa.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button("Enviar para a placa") { sendWifi(ssid: state.ssid, pass: state.pass) }
+                        .disabled(!status.usbPresent || state.ssid.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button("Esquecer a rede") { sendWifi(ssid: "", pass: "") }
+                        .disabled(!status.usbPresent)
+                    if !status.usbPresent {
+                        Text("Ligue a placa no USB para enviar.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let feedback = state.feedback {
+                    Text(feedback).font(.caption)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var linkText: String {
+        guard let via = status.via else { return "Placa: não conectada" }
+        let addr = status.address.map { " (\($0))" } ?? ""
+        return "Placa: conectada por \(via)\(addr)" + (status.active ? "" : ". Outro computador está na tela.")
+    }
+
+    private var boardNetText: String {
+        let n = status.boardNet
+        let ssid = n["ssid"] as? String ?? ""
+        switch n["state"] as? String {
+        case "connected": return "Conectada a \"\(ssid)\" (\(n["ip"] as? String ?? ""), \(n["rssi"] as? Int ?? 0) dBm)"
+        case "connecting":
+            if let why = n["why"] as? String, !why.isEmpty {
+                return "Não conectou a \"\(ssid)\": \(why) (código \(n["reason"] as? Int ?? 0)). Tentando de novo…"
+            }
+            return "Conectando a \"\(ssid)\"…"
+        case "off": return "Sem rede configurada"
+        default: return "Estado desconhecido (placa desconectada ou firmware antigo)"
+        }
+    }
+
+    private func sendWifi(ssid: String, pass: String) {
+        // Not trimmed inside: an SSID may legitimately have spaces, but not stray ones at the ends.
+        let name = ssid.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard name.utf8.count <= 32, pass.utf8.count <= 63 else {
+            state.feedback = "Nome da rede até 32 caracteres e senha até 63."
+            return
+        }
+        guard pass.isEmpty || pass.utf8.count >= 8 else {
+            state.feedback = "Senhas WPA têm pelo menos 8 caracteres."
+            return
+        }
+        let ok = (NSApp.delegate as? AppDelegate)?.device.sendWifi(ssid: name, pass: pass) ?? false
+        if ok {
+            UserDefaults.standard.set(name, forKey: "boardSSID")
+            state.pass = ""
+            state.feedback = name.isEmpty ? "A placa esqueceu a rede." : "Enviado. A placa está conectando a \"\(name)\"…"
+        } else {
+            state.feedback = "A placa não está no USB."
         }
     }
 }

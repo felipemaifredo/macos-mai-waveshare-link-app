@@ -22,3 +22,20 @@ void uiShowDiscord(JsonObjectConst msg);
 void uiShowMic(JsonObjectConst msg);
 // {"t":"layout","pages":[ids in tab order],"keys":[{"id","icon","text"}]}
 void uiShowLayout(JsonObjectConst msg);
+
+// --- Hosts (the computers connected to the board) ----------------------------------
+
+struct UiHost {
+    const char* name;
+    bool wifi; // false: USB
+};
+using HostSelectHandler = void (*)(int index); // index into the last uiSetHosts list
+using VoidHandler = void (*)();
+void uiSetHostHandlers(HostSelectHandler onSelect, VoidHandler onPairCancel, VoidHandler onForgetHosts);
+// The connected hosts and which one is on screen (-1: none). The chip in the header shows the
+// active one; tapping it lists all of them so the user can switch.
+void uiSetHosts(const UiHost* hosts, int count, int active);
+// One line about the network for the host list, e.g. "Wi-Fi: Casa  192.168.0.20".
+void uiSetNet(const char* text);
+// Shows the pairing code a new host must type. nullptr hides it.
+void uiShowPairCode(const char* code, const char* hostName);

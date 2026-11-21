@@ -20,6 +20,12 @@
 	<string>13.0</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Mostra na tela da placa a música que está tocando no Music ou no Spotify.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Conecta à tela Waveshare pela rede Wi-Fi.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_wslink._tcp</string>
+	</array>
 	<key>LSUIElement</key>
 	<true/>
 </dict>

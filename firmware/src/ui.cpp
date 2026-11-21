@@ -74,7 +74,9 @@ const DefaultKey DEFAULT_KEYS[] = {
 constexpr int MAX_KEYS = 12;
 
 UsageCard usageCards[2];
-lv_obj_t* usbIcon;
+lv_obj_t* hostChip;
+lv_obj_t* hostIcon;
+lv_obj_t* hostName;
 lv_obj_t* micBadge;
 lv_obj_t* camBadge;
 lv_obj_t* refreshBtn;
@@ -95,6 +97,18 @@ lv_obj_t* dockMuteBtn = nullptr;
 lv_obj_t* dockMuteLabel = nullptr;
 lv_obj_t* dockDeafBtn = nullptr;
 lv_obj_t* dockDeafLabel = nullptr;
+bool discordInCall = false;
+
+lv_obj_t* musicDock = nullptr;
+lv_obj_t* dockMusicApp = nullptr;
+lv_obj_t* dockMusicTitle = nullptr;
+lv_obj_t* dockMusicArtist = nullptr;
+lv_obj_t* dockPlayBtn = nullptr;
+lv_obj_t* dockPlayIcon = nullptr;
+lv_obj_t* dockNextBtn = nullptr;
+lv_obj_t* dockPrevBtn = nullptr;
+bool musicPlaying = false;
+bool musicActive = false;
 bool micMuted = false;
 char micText[48] = "Microfone"; // the mic key's own caption, shown when not muted
 lv_timer_t* refreshTimeout = nullptr;
@@ -318,14 +332,29 @@ void makeAppDeck() {
 
 // --- Shell --------------------------------------------------------------------
 
+void updateDocks() {
+    const bool isNowTab = (currentPage >= 0 && currentPage < PAGE_COUNT && strcmp(PAGES[currentPage].id, "now") == 0);
+
+    if (discordInCall) {
+        if (discordDock) showHidden(discordDock, true);
+        if (musicDock) showHidden(musicDock, false);
+    } else if (musicActive && !isNowTab) {
+        if (discordDock) showHidden(discordDock, false);
+        if (musicDock) showHidden(musicDock, true);
+    } else {
+        if (discordDock) showHidden(discordDock, false);
+        if (musicDock) showHidden(musicDock, false);
+    }
+}
+
 // `pos` is the tab position; order[pos] is the page.
 void pageShown(int pos) {
     lv_buttonmatrix_set_button_ctrl(pageSwitch, pos, LV_BUTTONMATRIX_CTRL_CHECKED);
     const int page = order[pos];
     showHidden(refreshBtn, strcmp(PAGES[page].id, "usage") == 0);
-    if (page == currentPage) return;
     currentPage = page;
     if (pageHandler) pageHandler(PAGES[page].id);
+    updateDocks();
 }
 
 void onPageSwitch(lv_event_t*) {
@@ -366,7 +395,7 @@ void applyPages() {
     }
     lv_buttonmatrix_set_map(pageSwitch, switchMap);
     lv_buttonmatrix_set_button_ctrl_all(pageSwitch, LV_BUTTONMATRIX_CTRL_CHECKABLE);
-    lv_obj_set_width(pageSwitch, visibleCount > 6 ? (visibleCount > 7 ? visibleCount * 68 : visibleCount * 80) : visibleCount * 95);
+    lv_obj_set_width(pageSwitch, visibleCount > 6 ? (visibleCount > 7 ? visibleCount * 65 : visibleCount * 80) : visibleCount * 95);
     if (visibleCount > 7) {
         lv_obj_set_style_text_font(pageSwitch, &lv_font_montserrat_16, LV_PART_ITEMS);
     } else {
@@ -400,6 +429,173 @@ lv_obj_t* badge(lv_obj_t* parent, const char* text, lv_color_t color) {
     lv_obj_set_style_pad_ver(b, 4, 0);
     lv_obj_add_flag(b, LV_OBJ_FLAG_HIDDEN);
     return b;
+}
+
+// --- Hosts: the chip in the header, the list to switch hosts, the pairing code ----------
+
+constexpr int MAX_UI_HOSTS = 6;
+struct HostEntry {
+    char name[24];
+    bool wifi;
+};
+HostEntry hostList[MAX_UI_HOSTS];
+int hostCount = 0;
+int hostActive = -1;
+char netText[128] = "Wi-Fi: desligado";
+HostSelectHandler hostSelectHandler = nullptr;
+VoidHandler pairCancelHandler = nullptr;
+VoidHandler forgetHostsHandler = nullptr;
+lv_obj_t* hostPopup = nullptr; // the backdrop on the top layer while the list is open
+lv_obj_t* hostPopupList = nullptr;
+lv_obj_t* hostPopupNet = nullptr;
+lv_obj_t* forgetLabel = nullptr;
+bool forgetArmed = false;
+lv_obj_t* pairOverlay = nullptr;
+
+// Dims the screen; the dialogs sit on it. Deleted with lv_obj_delete_async because they
+// close from their own buttons' callbacks.
+lv_obj_t* backdrop() {
+    lv_obj_t* b = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(b);
+    lv_obj_set_size(b, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_70, 0);
+    lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+    return b;
+}
+
+lv_obj_t* dialog(lv_obj_t* parent, int width) {
+    lv_obj_t* c = card(parent);
+    lv_obj_set_size(c, width, LV_SIZE_CONTENT);
+    lv_obj_center(c);
+    lv_obj_set_style_pad_row(c, 12, 0);
+    return c;
+}
+
+lv_obj_t* rowButton(lv_obj_t* parent, const char* icon, const char* text, lv_color_t bg, int height) {
+    lv_obj_t* b = lv_button_create(parent);
+    lv_obj_set_size(b, LV_PCT(100), height);
+    lv_obj_set_style_radius(b, 12, 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_set_style_bg_color(b, bg, 0);
+    lv_obj_set_style_bg_color(b, PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_flex_flow(b, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(b, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_hor(b, 16, 0);
+    lv_obj_set_style_pad_column(b, 14, 0);
+    label(b, &lv_font_montserrat_20, TEXT, icon);
+    lv_obj_t* l = label(b, &lv_font_montserrat_20, TEXT, text);
+    lv_obj_set_flex_grow(l, 1);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+    return b;
+}
+
+void refreshHostChip() {
+    const bool on = hostActive >= 0 && hostActive < hostCount;
+    lv_label_set_text(hostIcon, on && hostList[hostActive].wifi ? LV_SYMBOL_WIFI : LV_SYMBOL_USB);
+    lv_obj_set_style_text_color(hostIcon, on ? GOOD : DIM, 0);
+    lv_label_set_text(hostName, on ? hostList[hostActive].name : "Nenhum");
+    lv_obj_set_style_text_color(hostName, on ? TEXT : DIM, 0);
+}
+
+void closeHostPopup() {
+    if (hostPopup) lv_obj_delete_async(hostPopup);
+    hostPopup = hostPopupList = hostPopupNet = forgetLabel = nullptr;
+    forgetArmed = false;
+}
+
+void onHostPicked(lv_event_t* e) {
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    closeHostPopup();
+    if (hostSelectHandler) hostSelectHandler(i);
+}
+
+void fillHostPopup() {
+    if (!hostPopupList) return;
+    lv_obj_clean(hostPopupList);
+    if (hostCount == 0) label(hostPopupList, &lv_font_montserrat_20, DIM, "Nenhum computador conectado");
+    for (int i = 0; i < hostCount; i++) {
+        const bool on = i == hostActive;
+        lv_obj_t* b = rowButton(hostPopupList, hostList[i].wifi ? LV_SYMBOL_WIFI : LV_SYMBOL_USB, hostList[i].name,
+                                on ? lv_color_hex(0x33363E) : TRACK, 54);
+        if (on) label(b, &lv_font_montserrat_20, GOOD, LV_SYMBOL_OK);
+        lv_obj_add_event_cb(b, onHostPicked, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+    }
+    lv_label_set_text(hostPopupNet, netText);
+}
+
+void onForgetHosts(lv_event_t*) {
+    if (!forgetArmed) {
+        forgetArmed = true;
+        lv_label_set_text(forgetLabel, "Toque de novo para confirmar");
+        return;
+    }
+    closeHostPopup();
+    if (forgetHostsHandler) forgetHostsHandler();
+}
+
+void openHostPopup(lv_event_t*) {
+    if (hostPopup || pairOverlay) return;
+    hostPopup = backdrop();
+    lv_obj_add_event_cb(hostPopup, [](lv_event_t* e) {
+        if (lv_event_get_target(e) == lv_event_get_current_target(e)) closeHostPopup();
+    }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* c = dialog(hostPopup, 480);
+    label(c, &lv_font_montserrat_28, TEXT, "Computadores");
+    label(c, &lv_font_montserrat_16, DIM, "Toque num computador para mostrar os dados dele.");
+    hostPopupList = box(c, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(hostPopupList, 8, 0);
+    hostPopupNet = label(c, &lv_font_montserrat_16, DIM, "");
+    lv_obj_set_width(hostPopupNet, LV_PCT(100));
+    lv_obj_t* forget = rowButton(c, LV_SYMBOL_TRASH, "Esquecer pareamentos do Wi-Fi", CARD, 44);
+    lv_obj_set_style_text_color(lv_obj_get_child(forget, 0), DIM, 0);
+    forgetLabel = lv_obj_get_child(forget, 1);
+    lv_obj_set_style_text_color(forgetLabel, DIM, 0);
+    lv_obj_add_event_cb(forget, onForgetHosts, LV_EVENT_CLICKED, nullptr);
+    fillHostPopup();
+}
+
+void makeHostChip(lv_obj_t* header) {
+    hostChip = lv_button_create(header);
+    lv_obj_set_size(hostChip, 96, 52);
+    lv_obj_set_style_radius(hostChip, 12, 0);
+    lv_obj_set_style_shadow_width(hostChip, 0, 0);
+    lv_obj_set_style_bg_color(hostChip, CARD, 0);
+    lv_obj_set_style_bg_color(hostChip, PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_flex_flow(hostChip, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(hostChip, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_hor(hostChip, 10, 0);
+    lv_obj_set_style_pad_column(hostChip, 6, 0);
+    hostIcon = label(hostChip, &lv_font_montserrat_20, DIM, LV_SYMBOL_USB);
+    hostName = label(hostChip, &lv_font_montserrat_16, DIM, "");
+    lv_obj_set_flex_grow(hostName, 1);
+    lv_label_set_long_mode(hostName, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_add_event_cb(hostChip, openHostPopup, LV_EVENT_CLICKED, nullptr);
+    refreshHostChip();
+}
+
+void showPairCode(const char* code, const char* name) {
+    if (pairOverlay) lv_obj_delete_async(pairOverlay);
+    pairOverlay = nullptr;
+    if (!code) return;
+    closeHostPopup();
+
+    pairOverlay = backdrop();
+    lv_obj_t* c = dialog(pairOverlay, 560);
+    lv_obj_set_flex_align(c, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    label(c, &lv_font_montserrat_28, TEXT, "Parear pelo Wi-Fi");
+    lv_obj_t* who = label(c, &lv_font_montserrat_20, DIM, "");
+    lv_label_set_text_fmt(who, "\"%s\" quer se conectar a esta tela.", name && *name ? name : "Um computador");
+    label(c, &lv_font_montserrat_20, DIM, "Digite este codigo no computador:");
+    char spaced[8];
+    snprintf(spaced, sizeof(spaced), "%.3s %.3s", code, code + 3);
+    lv_obj_t* digits = label(c, bigFont(88), ACCENT, spaced);
+    lv_obj_set_style_pad_ver(digits, 6, 0);
+    lv_obj_t* cancel = rowButton(c, LV_SYMBOL_CLOSE, "Cancelar", TRACK, 52);
+    lv_obj_add_event_cb(cancel, [](lv_event_t*) {
+        if (pairCancelHandler) pairCancelHandler();
+    }, LV_EVENT_CLICKED, nullptr);
 }
 
 } // namespace
@@ -530,7 +726,7 @@ void uiBegin(PressHandler onPress, PageHandler onPage) {
 
     micBadge = badge(header, "MIC", WARN);
     camBadge = badge(header, LV_SYMBOL_VIDEO, GOOD);
-    usbIcon = label(header, &lv_font_montserrat_20, DIM, LV_SYMBOL_USB);
+    makeHostChip(header);
 
     refreshBtn = lv_button_create(header);
     lv_obj_set_size(refreshBtn, 52, 52);
@@ -593,6 +789,59 @@ void uiBegin(PressHandler onPress, PageHandler onPage) {
     label(dockDeafBtn, &lv_font_montserrat_28, TEXT, LV_SYMBOL_AUDIO);
     dockDeafLabel = label(dockDeafBtn, &lv_font_montserrat_16, TEXT, "Ouvir");
 
+    // Music Sidebar Dock (visible when music is active and not on the "now" tab)
+    musicDock = card(mainRow);
+    lv_obj_set_size(musicDock, 110, LV_PCT(100));
+    lv_obj_set_flex_flow(musicDock, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(musicDock, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(musicDock, 8, 0);
+    lv_obj_set_style_pad_row(musicDock, 6, 0);
+    lv_obj_set_style_border_color(musicDock, lv_color_hex(0x1DB954), 0);
+    lv_obj_set_style_border_width(musicDock, 2, 0);
+    lv_obj_add_flag(musicDock, LV_OBJ_FLAG_HIDDEN);
+
+    dockMusicApp = label(musicDock, &lv_font_montserrat_14, lv_color_hex(0x1DB954), "MUSICA");
+
+    dockMusicTitle = label(musicDock, &lv_font_montserrat_14, TEXT, "Nada");
+    lv_obj_set_width(dockMusicTitle, LV_PCT(100));
+    lv_label_set_long_mode(dockMusicTitle, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_align(dockMusicTitle, LV_TEXT_ALIGN_CENTER, 0);
+
+    dockMusicArtist = label(musicDock, &lv_font_montserrat_14, DIM, "");
+    lv_obj_set_width(dockMusicArtist, LV_PCT(100));
+    lv_label_set_long_mode(dockMusicArtist, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_align(dockMusicArtist, LV_TEXT_ALIGN_CENTER, 0);
+
+    dockPlayBtn = lv_button_create(musicDock);
+    lv_obj_set_width(dockPlayBtn, LV_PCT(100));
+    lv_obj_set_flex_grow(dockPlayBtn, 1);
+    lv_obj_set_style_radius(dockPlayBtn, 14, 0);
+    lv_obj_set_style_bg_color(dockPlayBtn, lv_color_hex(0x1DB954), 0);
+    lv_obj_set_style_bg_color(dockPlayBtn, PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(dockPlayBtn, 0, 0);
+    lv_obj_set_flex_flow(dockPlayBtn, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(dockPlayBtn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_event_cb(dockPlayBtn, [](lv_event_t*) { sendPress("key:play"); }, LV_EVENT_CLICKED, nullptr);
+    dockPlayIcon = label(dockPlayBtn, &lv_font_montserrat_28, TEXT, LV_SYMBOL_PLAY);
+
+    dockNextBtn = lv_button_create(musicDock);
+    lv_obj_set_size(dockNextBtn, LV_PCT(100), 54);
+    lv_obj_set_style_radius(dockNextBtn, 12, 0);
+    lv_obj_set_style_bg_color(dockNextBtn, TRACK, 0);
+    lv_obj_set_style_bg_color(dockNextBtn, PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(dockNextBtn, 0, 0);
+    lv_obj_add_event_cb(dockNextBtn, [](lv_event_t*) { sendPress("key:next"); }, LV_EVENT_CLICKED, nullptr);
+    lv_obj_center(label(dockNextBtn, &lv_font_montserrat_20, TEXT, LV_SYMBOL_NEXT));
+
+    dockPrevBtn = lv_button_create(musicDock);
+    lv_obj_set_size(dockPrevBtn, LV_PCT(100), 48);
+    lv_obj_set_style_radius(dockPrevBtn, 10, 0);
+    lv_obj_set_style_bg_color(dockPrevBtn, TRACK, 0);
+    lv_obj_set_style_bg_color(dockPrevBtn, PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(dockPrevBtn, 0, 0);
+    lv_obj_add_event_cb(dockPrevBtn, [](lv_event_t*) { sendPress("key:prev"); }, LV_EVENT_CLICKED, nullptr);
+    lv_obj_center(label(dockPrevBtn, &lv_font_montserrat_16, DIM, LV_SYMBOL_PREV));
+
     for (int i = 0; i < PAGE_COUNT; i++) {
         tiles[i] = lv_tileview_add_tile(pages, i, 0, LV_DIR_HOR);
         lv_obj_set_style_pad_all(tiles[i], 0, 0);
@@ -621,7 +870,6 @@ const char* uiCurrentPage() { return PAGES[currentPage].id; }
 
 void uiSetLinked(bool linked) {
     isLinked = linked;
-    lv_obj_set_style_text_color(usbIcon, linked ? GOOD : DIM, 0);
     setRefreshing(refreshTimeout != nullptr);
     for (int i = 0; i < keyCount; i++) {
         if (linked) lv_obj_remove_state(keyBtns[i], LV_STATE_DISABLED);
@@ -643,9 +891,24 @@ void uiSetLinked(bool linked) {
             lv_obj_add_state(dockDeafBtn, LV_STATE_DISABLED);
         }
     }
+    if (musicDock) {
+        if (linked) {
+            lv_obj_remove_state(dockPlayBtn, LV_STATE_DISABLED);
+            lv_obj_remove_state(dockNextBtn, LV_STATE_DISABLED);
+            lv_obj_remove_state(dockPrevBtn, LV_STATE_DISABLED);
+        } else {
+            lv_obj_add_state(dockPlayBtn, LV_STATE_DISABLED);
+            lv_obj_add_state(dockNextBtn, LV_STATE_DISABLED);
+            lv_obj_add_state(dockPrevBtn, LV_STATE_DISABLED);
+        }
+    }
     if (!linked) {
+        // Nothing from the previous host may linger (also when the board switches hosts).
         lv_obj_add_flag(micBadge, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(camBadge, LV_OBJ_FLAG_HIDDEN);
+        discordInCall = false;
+        musicActive = false;
+        updateDocks();
     }
 }
 
@@ -671,19 +934,41 @@ void uiShowMic(JsonObjectConst msg) {
     showHidden(camBadge, msg["camInUse"] | false);
 }
 
-void uiShowNow(JsonObjectConst msg) { nowShow(msg); }
+void uiShowNow(JsonObjectConst msg) {
+    nowShow(msg);
+
+    const char* app = msg["app"] | "";
+    const char* title = msg["title"] | "";
+    const char* artist = msg["artist"] | "";
+    musicPlaying = msg["playing"] | false;
+    musicActive = (*app != '\0') && (*title != '\0');
+
+    if (musicDock) {
+        lv_label_set_text(dockMusicApp, *app ? app : "MUSICA");
+        lv_label_set_text(dockMusicTitle, *title ? title : "Sem musica");
+        lv_label_set_text(dockMusicArtist, *artist ? artist : "");
+        lv_label_set_text(dockPlayIcon, musicPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+
+        const bool isSpotify = (strcasecmp(app, "Spotify") == 0);
+        const lv_color_t accent = isSpotify ? lv_color_hex(0x1DB954) : lv_color_hex(0xFC3C44);
+        lv_obj_set_style_border_color(musicDock, accent, 0);
+        lv_obj_set_style_text_color(dockMusicApp, accent, 0);
+        lv_obj_set_style_bg_color(dockPlayBtn, musicPlaying ? accent : TRACK, 0);
+    }
+
+    updateDocks();
+}
 void uiShowArt(const char* base64) { nowShowArt(base64); }
 void uiShowMac(JsonObjectConst msg) { macShow(msg); }
 void uiShowDocker(JsonObjectConst msg) { dockerShow(msg); }
 void uiShowClock(JsonObjectConst msg) { clockShow(msg); }
 void uiShowAudio(JsonObjectConst msg) { audioShow(msg); }
 void uiShowDiscord(JsonObjectConst msg) {
-    const bool inCall = msg["inCall"] | false;
+    discordInCall = msg["inCall"] | false;
     const bool isMuted = msg["muted"] | false;
     const bool isDeaf = msg["deafened"] | false;
 
     if (discordDock) {
-        showHidden(discordDock, inCall);
         lv_obj_set_style_bg_color(dockMuteBtn, isMuted ? DANGER : lv_color_hex(0x5865F2), 0);
         lv_label_set_text(dockMuteLabel, isMuted ? "Mutado" : "Mic ON");
 
@@ -692,6 +977,7 @@ void uiShowDiscord(JsonObjectConst msg) {
     }
 
     discordShow(msg);
+    updateDocks();
 }
 
 void uiShowLayout(JsonObjectConst msg) {
@@ -736,3 +1022,27 @@ void uiShowLayout(JsonObjectConst msg) {
         layoutApps();
     }
 }
+
+void uiSetHostHandlers(HostSelectHandler onSelect, VoidHandler onPairCancel, VoidHandler onForgetHosts) {
+    hostSelectHandler = onSelect;
+    pairCancelHandler = onPairCancel;
+    forgetHostsHandler = onForgetHosts;
+}
+
+void uiSetHosts(const UiHost* hosts, int count, int active) {
+    hostCount = count < MAX_UI_HOSTS ? count : MAX_UI_HOSTS;
+    for (int i = 0; i < hostCount; i++) {
+        snprintf(hostList[i].name, sizeof(hostList[i].name), "%s", hosts[i].name);
+        hostList[i].wifi = hosts[i].wifi;
+    }
+    hostActive = active < hostCount ? active : -1;
+    refreshHostChip();
+    fillHostPopup();
+}
+
+void uiSetNet(const char* text) {
+    snprintf(netText, sizeof(netText), "%s", text);
+    if (hostPopupNet) lv_label_set_text(hostPopupNet, netText);
+}
+
+void uiShowPairCode(const char* code, const char* hostName) { showPairCode(code, hostName); }
