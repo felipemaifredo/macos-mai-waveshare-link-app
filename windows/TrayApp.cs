@@ -20,6 +20,7 @@ sealed class TrayApp : ApplicationContext
     readonly SystemFeed system = new();
     readonly ClockFeed clock;
     readonly DockerFeed docker = new();
+    readonly UsageFeed usage = new();
     readonly NotifyIcon tray = new();
     readonly ContextMenuStrip menu = new();
     readonly Icon iconLive = MakeIcon(Color.FromArgb(61, 190, 120));
@@ -56,6 +57,7 @@ sealed class TrayApp : ApplicationContext
         system.OnSample = Push;
         clock.OnChange = () => Push(clock.Message);
         docker.OnChange = () => Push(docker.Message);
+        usage.OnChange = () => Push(usage.Message);
         micTimer.Tick += (_, _) => PushMic(force: false);
         audioTimer.Tick += (_, _) => PushAudio(force: false);
 
@@ -78,7 +80,7 @@ sealed class TrayApp : ApplicationContext
         var mix = audio.Message();
         lastMic = mic.ToJsonString();
         lastAudio = mix.ToJsonString();
-        return [config.LayoutMessage(), media.Message, media.ArtMessage, mic, clock.Message, mix];
+        return [config.LayoutMessage(), usage.Message, media.Message, media.ArtMessage, mic, clock.Message, mix];
     }
 
     void Push(JsonObject? msg)
@@ -114,7 +116,8 @@ sealed class TrayApp : ApplicationContext
         else if (id.StartsWith("vol:")) { audio.HandleVolume(id[4..]); PushAudio(force: false); }
         else if (id.StartsWith("mute:")) { audio.HandleMute(id[5..]); PushAudio(force: false); PushMic(force: false); }
         else if (id.StartsWith("outdev:")) { audio.HandleOutputDevice(id[7..]); PushAudio(force: false); }
-        // "refresh" (Uso) and "discord:*" are not on Windows yet.
+        else if (id == "refresh") usage.Refresh();
+        // "discord:*" is not on Windows yet.
     }
 
     /// Atalhos keys (from the settings) and the media buttons of Tocando and the music dock.
@@ -157,8 +160,12 @@ sealed class TrayApp : ApplicationContext
         var status = StatusLine();
         tray.Text = Text.Cut("Waveshare Link: " + status, 127);
         micTimer.Enabled = live;
+        UpdateUsage();
         if (!live) OnPage("");
     }
+
+    /// Like the Mac: usage is fetched while live with the page enabled, whatever page is open.
+    void UpdateUsage() => usage.SetActive(board.IsLive && config.Pages.Contains("usage"));
 
     string StatusLine()
     {
@@ -225,6 +232,7 @@ sealed class TrayApp : ApplicationContext
             board.Rename();
             if (config.City != oldCity) clock.Invalidate();
             Push(config.LayoutMessage());
+            UpdateUsage();
             if (config.BoardAddress != oldAddress) board.Reconnect();
         });
         f.ShowDialog();
@@ -248,6 +256,7 @@ sealed class TrayApp : ApplicationContext
         board.Rename();
         clock.Invalidate();
         Push(config.LayoutMessage());
+        UpdateUsage();
     }
 
     static bool AutostartEnabled

@@ -13,6 +13,7 @@
     <AssemblyName>WaveshareLink</AssemblyName>
     <RootNamespace>WaveshareLink</RootNamespace>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

@@ -11,12 +11,15 @@ cd windows
 dotnet run
 ```
 
-Em Debug (`dotnet run`), abre uma janela de console com o log. Para gerar o app sem console:
+Em Debug (`dotnet run`), abre uma janela de console com o log.
+
+## Instalar (menu Iniciar)
 
 ```powershell
-dotnet publish -c Release -r win-x64 --self-contained false -o publish
-.\publish\WaveshareLink.exe
+powershell -ExecutionPolicy Bypass -File windows\install.ps1
 ```
+
+Fecha o app se estiver aberto, gera a versão Release (sem console) em `%LOCALAPPDATA%\Programs\WaveshareLink`, cria o atalho **Waveshare Link** no menu Iniciar e abre o app. Rode de novo depois de mudar o código para atualizar. Se *Iniciar com o Windows* estiver ligado, passa a apontar para a versão instalada. O ícone é `app.ico`.
 
 Na primeira conexão, a placa mostra um código de 6 dígitos e o PC abre uma janela pedindo esse código.
 
@@ -37,8 +40,9 @@ Na primeira conexão, a placa mostra um código de 6 dígitos e o PC abre uma ja
 | Mixer | Volume geral, volume do player do Tocando, microfone, troca da saída de áudio |
 | Apps | Mesmo que Atalhos, botões próprios |
 | Docker | `docker ps -a` (precisa do Docker no PATH) |
+| Uso | Claude (token do Claude Code em `%USERPROFILE%\.claude\.credentials.json`) e Antigravity (API local, `%USERPROFILE%\.gemini\antigravity\daemon\hub_*.json`). Por causa do limite das APIs: busca automática no máximo a cada 5 min (trocar de aba ou de computador não zera a contagem) e o botão ↻ no máximo 1x por minuto |
 
-Ainda não: **Uso** (Claude/Antigravity) e **Discord**. Selos MIC e câmera vêm do registro de privacidade do Windows.
+Ainda não: **Discord**. Selos MIC e câmera vêm do registro de privacidade do Windows.
 
 ## Ajustes
 
@@ -53,6 +57,7 @@ BoardLink.cs        # conexão TCP, handshake HMAC, pareamento, host ativo
 Discovery.cs        # acha waveshare.local (consulta mDNS própria + resolução do Windows)
 Config.cs           # settings.json, layout enviado à placa
 KeyRunner.cs        # executa os atalhos
-Feeds/              # MediaFeed, AudioFeed (+ PolicyConfig, Privacy), SystemFeed, ClockFeed, DockerFeed
+Feeds/              # MediaFeed, AudioFeed (+ PolicyConfig, Privacy), SystemFeed, ClockFeed, DockerFeed, UsageFeed
+install.ps1         # publica em %LOCALAPPDATA%\Programs\WaveshareLink e cria o atalho no menu Iniciar
 Ui/                 # PairDialog, SettingsForm
 ```

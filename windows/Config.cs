@@ -51,7 +51,7 @@ public sealed class Config
     /// Page ids the board knows, with their names, in the board's default order.
     public static readonly (string Id, string Name)[] AllPages =
     [
-        ("usage", "Uso (ainda não no Windows)"), ("now", "Tocando"), ("keys", "Atalhos"),
+        ("usage", "Uso (Claude e Antigravity)"), ("now", "Tocando"), ("keys", "Atalhos"),
         ("mac", "Sistema (aba \"Mac\" na placa)"), ("docker", "Docker"), ("clock", "Hora"),
         ("audio", "Mixer"), ("apps", "Apps"), ("discord", "Discord (ainda não no Windows)"),
     ];

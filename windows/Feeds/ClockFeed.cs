@@ -72,8 +72,7 @@ sealed class ClockFeed
         try
         {
             var url = string.Create(CultureInfo.InvariantCulture,
-                $"https://api.open-meteo.com/v1/forecast?latitude={config.Latitude}&longitude={config.Longitude}"
-                + "&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1");
+                $"https://api.open-meteo.com/v1/forecast?latitude={config.Latitude}&longitude={config.Longitude}&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1");
             var root = JsonNode.Parse(await Http.GetStringAsync(url));
             var temp = root?["current"]?["temperature_2m"]?.GetValue<double>();
             if (temp == null) return;

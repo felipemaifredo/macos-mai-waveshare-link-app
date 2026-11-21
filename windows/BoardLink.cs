@@ -45,6 +45,8 @@ sealed class BoardLink
     bool pumping;
     bool connecting;
     DateTime lastRx;
+    DateTime connectedAt;
+    bool probed;
     DateTime nextAttempt = DateTime.MinValue;
     string? boardId;
     string boardNonce = "";
@@ -105,6 +107,21 @@ sealed class BoardLink
                 Log.Info("A placa parou de responder. Reconectando.");
                 Close();
             }
+            return;
+        }
+        // Handshake. Pairing waits for the user, so it has no deadline here (the board's is 90 s).
+        if (NeedsPairing || askingCode) return;
+        var waiting = (DateTime.Now - connectedAt).TotalSeconds;
+        if (boardId == null && waiting > 3 && !probed)
+        {
+            probed = true;
+            Log.Info("A placa não mandou hello. Pedindo de novo.");
+            Send(new JsonObject { ["t"] = "probe" });
+        }
+        else if (waiting > 15)
+        {
+            Log.Info(boardId == null ? "A placa não respondeu ao hello. Reconectando." : "A placa não respondeu à autenticação. Reconectando.");
+            Close();
         }
     }
 
@@ -127,7 +144,9 @@ sealed class BoardLink
             c = null;
             stream = client.GetStream();
             Address = ip.ToString();
-            lastRx = DateTime.Now;
+            lastRx = connectedAt = DateTime.Now;
+            boardId = null;
+            probed = false;
             Log.Info($"Conectado à placa em {ip}:{Port}");
             var gen = ++generation;
             _ = ReadLoop(stream, gen);
@@ -154,7 +173,11 @@ sealed class BoardLink
             while (gen == generation)
             {
                 int n = await s.ReadAsync(buf);
-                if (n <= 0) break;
+                if (n <= 0)
+                {
+                    if (gen == generation) Log.Info("A placa fechou a conexão.");
+                    break;
+                }
                 if (gen != generation) return;
                 lastRx = DateTime.Now;
                 int start = 0;
