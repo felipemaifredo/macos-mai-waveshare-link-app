@@ -73,7 +73,8 @@ const DefaultKey DEFAULT_KEYS[] = {
 };
 constexpr int MAX_KEYS = 12;
 
-UsageCard usageCards[2];
+constexpr int USAGE_CARDS = 3; // Claude, Codex, Antigravity
+UsageCard usageCards[USAGE_CARDS];
 lv_obj_t* hostChip;
 lv_obj_t* hostIcon;
 lv_obj_t* hostName;
@@ -144,8 +145,9 @@ UsageCard makeUsageCard(lv_obj_t* parent) {
     lv_obj_set_flex_grow(o, 1);
     lv_obj_set_style_pad_row(o, 10, 0);
 
-    lv_obj_t* head = box(o, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    // Name above the percentage: three cards side by side leave ~210 px each.
+    lv_obj_t* head = box(o, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(head, 2, 0);
     c.name = label(head, &lv_font_montserrat_28, TEXT, "");
     c.pct = label(head, &lv_font_montserrat_48, TEXT, "--");
 
@@ -197,7 +199,9 @@ void addRow(lv_obj_t* list, const char* text, int pct, const char* reset, lv_col
 
 void fillUsageCard(UsageCard& c, JsonObjectConst p) {
     const char* name = p["name"] | "";
-    const lv_color_t accent = strcmp(name, "Claude") == 0 ? CLAUDE : GEMINI;
+    const lv_color_t accent = strcmp(name, "Claude") == 0  ? CLAUDE
+                              : strcmp(name, "Codex") == 0 ? CODEX
+                                                           : GEMINI;
     lv_label_set_text(c.name, name);
     lv_obj_set_style_text_color(c.name, accent, 0);
 
@@ -869,8 +873,7 @@ void uiBegin(PressHandler onPress, PageHandler onPage) {
 
     lv_obj_set_flex_flow(tiles[0], LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(tiles[0], 14, 0);
-    usageCards[0] = makeUsageCard(tiles[0]);
-    usageCards[1] = makeUsageCard(tiles[0]);
+    for (UsageCard& c : usageCards) c = makeUsageCard(tiles[0]);
 
     nowBuild(tiles[1]);
     makeDeck();
@@ -937,7 +940,7 @@ void uiShowUsage(JsonArrayConst providers) {
     bool anyBusy = false;
     int i = 0;
     for (JsonObjectConst p : providers) {
-        if (i >= 2) break;
+        if (i >= USAGE_CARDS) break;
         fillUsageCard(usageCards[i++], p);
         anyBusy |= p["busy"] | false;
     }

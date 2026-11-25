@@ -4,7 +4,7 @@ App de barra de menus do macOS que conversa com a tela touch **Waveshare ESP32-S
 
 A tela tem até sete páginas. Para trocar de página, use o seletor no topo ou deslize o dedo para o lado:
 
-- **Uso**: o uso do Claude e do Antigravity. O Waveshare Link busca esses números sozinho, do mesmo jeito que o app [AI Usage](../macos-mai-ai-usage-app): ao conectar, a cada 5 min e no botão ↻. Os dois apps são independentes: o AI Usage mostra o uso na barra do topo, e o Waveshare Link manda para a placa.
+- **Uso**: o uso do Claude, do Codex e do Antigravity. O Waveshare Link busca esses números sozinho, do mesmo jeito que o app [AI Usage](../macos-mai-ai-usage-app): ao conectar, a cada 5 min e no botão ↻. Os dois apps são independentes: o AI Usage mostra o uso na barra do topo, e o Waveshare Link manda para a placa.
 - **Tocando**: música, artista, álbum, capa e progresso do que toca no Music ou no Spotify, com Anterior, Play/Pausa e Próxima.
 - **Atalhos**: até 12 botões. De fábrica: Captura (abre a barra do ⌘⇧5), Microfone (silencia o microfone padrão; fica vermelho quando mudo), Apagar tela, Volume −, Volume + e Mudo.
 - **Mac**: CPU (com os últimos 2 minutos), memória, bateria e rede.
@@ -72,7 +72,7 @@ As teclas de mídia e de volume são eventos de teclado simulados, e o macOS exi
 main.swift          # porta USB (SerialLink), atalhos, página Uso, barra de menus
 BoardLink.swift     # conexão com a placa: handshake, pareamento, host ativo, Wi-Fi ou USB
 NetLink.swift       # transporte Wi-Fi (Bonjour + TCP)
-UsageProviders.swift # provedores Claude e Antigravity, copiados do AI Usage (mantenha os dois iguais)
+UsageProviders.swift # provedores Claude e Antigravity, copiados do AI Usage (mantenha os dois iguais), e Codex
 NowPlaying.swift    # página Tocando (Music/Spotify, capa em JPEG 220x220)
 AudioMixer.swift    # página Mixer (CoreAudio master/dispositivos, Spotify/Music e mic)
 MicControl.swift    # microfone (CoreAudio) e câmera em uso (CoreMediaIO)
@@ -148,4 +148,4 @@ O app testa as portas `/dev/cu.usbmodem*`, `cu.usbserial*` e `cu.wchusbserial*`.
 
 Para testar sem a placa, use `WAVESHARE_LINK_SERIAL=/dev/ttysNNN` para apontar o app para um pty.
 
-O Claude é lido com o token do Claude Code (Keychain, item `Claude Code-credentials`) na API `api.anthropic.com/api/oauth/usage`. O Antigravity é lido da API local do hub (`~/.gemini/antigravity/daemon/hub_*.json`). Se uma dessas APIs mudar, corrija `UsageProviders.swift` aqui e no AI Usage.
+O Claude é lido com o token do Claude Code (Keychain, item `Claude Code-credentials`) na API `api.anthropic.com/api/oauth/usage`. O Codex é lido com o login do Codex (`~/.codex/auth.json`) na API do ChatGPT `chatgpt.com/backend-api/wham/usage`, a mesma do `/status` do Codex; se a resposta não for entendida, usa o último registro de limites que o Codex gravou em `~/.codex/sessions`. O Antigravity é lido da API local do hub (`~/.gemini/antigravity/daemon/hub_*.json`). Se uma dessas APIs mudar, corrija `UsageProviders.swift` aqui e no AI Usage.

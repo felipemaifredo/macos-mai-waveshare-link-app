@@ -230,7 +230,7 @@ enum DeckActions {
 
 // MARK: - AI usage (fetched here, the same way AI Usage does; see UsageProviders.swift)
 
-/// Fetches Claude and Antigravity usage for the board's "Uso" page: on connect, every 5 min
+/// Fetches Claude, Codex and Antigravity usage for the board's "Uso" page: on connect, every 5 min
 /// and when the board's ↻ is pressed. Nothing is fetched while the board is disconnected.
 /// The Claude API limits how often it may be asked (HTTP 429), and with Wi-Fi and host switching
 /// this Mac goes on and off the board's screen often: coming back reuses data younger than 5 min,
@@ -253,7 +253,7 @@ final class UsageFeed {
     static let minManualGap: TimeInterval = 60
 
     var onChange: () -> Void = {}
-    private let entries = [Entry(ClaudeProvider()), Entry(AntigravityProvider())]
+    private let entries = [Entry(ClaudeProvider()), Entry(CodexProvider()), Entry(AntigravityProvider())]
     private var timer: Timer?
 
     func setActive(_ on: Bool) {
@@ -299,11 +299,11 @@ final class UsageFeed {
                     e.blockedUntil = nil
                 } catch FetchError.notRunning {
                     e.rows = []
-                    e.error = "Antigravity não está aberto"
+                    e.error = e.provider.noCredentialsMessage
                 } catch FetchError.expired {
                     e.error = e.provider.expiredMessage
                 } catch FetchError.noCredentials {
-                    e.error = "Credenciais do Claude Code não encontradas"
+                    e.error = e.provider.noCredentialsMessage
                 } catch FetchError.rateLimited(let until) {
                     // Keep showing the last numbers.
                     e.blockedUntil = until

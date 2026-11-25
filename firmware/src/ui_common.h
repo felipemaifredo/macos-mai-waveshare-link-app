@@ -19,6 +19,7 @@ inline const lv_color_t DANGER = lv_color_hex(0xE5484D);
 inline const lv_color_t ACCENT = lv_color_hex(0x4C8DF6);
 inline const lv_color_t CLAUDE = lv_color_hex(0xD97757);
 inline const lv_color_t GEMINI = lv_color_hex(0x4C8DF6);
+inline const lv_color_t CODEX = lv_color_hex(0x10A37F);
 
 // Invisible full-width container that sizes to its content.
 lv_obj_t* box(lv_obj_t* parent, lv_flex_flow_t flow);

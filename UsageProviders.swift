@@ -26,6 +26,7 @@ protocol UsageProvider {
     var name: String { get }
     var symbol: String { get }
     var expiredMessage: String { get }
+    var noCredentialsMessage: String { get }
     func fetch() async throws -> [UsageRow]
     /// Value shown in the menu bar title.
     func headline(_ rows: [UsageRow]) -> Double?
@@ -87,6 +88,7 @@ struct ClaudeProvider: UsageProvider {
     let name = "Claude"
     let symbol = "◐"
     let expiredMessage = "Login expirado: abra o Claude Code para renovar"
+    let noCredentialsMessage = "Credenciais do Claude Code não encontradas"
 
     func readAccessToken() throws -> String {
         let p = Process()
@@ -152,6 +154,7 @@ struct AntigravityProvider: UsageProvider {
     let name = "Antigravity"
     let symbol = "✦"
     let expiredMessage = "Antigravity recusou o acesso: reabra o Antigravity"
+    let noCredentialsMessage = "Antigravity não está aberto"
 
     struct Hub { let port: Int; let csrf: String }
 
@@ -228,3 +231,121 @@ struct AntigravityProvider: UsageProvider {
     }
 }
 
+
+// MARK: - Codex (ChatGPT login of the Codex CLI / app)
+
+/// Reads the Codex login (~/.codex/auth.json) and asks the ChatGPT backend for the rate limits,
+/// the same endpoint the Codex CLI uses for /status. If that answer is not understood, falls back
+/// to the last "rate_limits" event Codex wrote in its session logs (~/.codex/sessions).
+struct CodexProvider: UsageProvider {
+    let name = "Codex"
+    let symbol = "◎"
+    let expiredMessage = "Login expirado: abra o Codex para renovar"
+    let noCredentialsMessage = "Login do Codex não encontrado"
+
+    var home: URL {
+        if let h = ProcessInfo.processInfo.environment["CODEX_HOME"], !h.isEmpty { return URL(fileURLWithPath: h) }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+    }
+
+    func readAuth() throws -> (token: String, account: String?) {
+        guard let data = try? Data(contentsOf: home.appendingPathComponent("auth.json")),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tokens = json["tokens"] as? [String: Any],
+              let token = tokens["access_token"] as? String, !token.isEmpty
+        else { throw FetchError.noCredentials }
+        return (token, tokens["account_id"] as? String)
+    }
+
+    func windowLabel(minutes: Double?) -> String {
+        guard let m = minutes, m > 0 else { return "Limite" }
+        switch m {
+        case ..<(6 * 60): return "Sessão (\(Int((m / 60).rounded()))h)"
+        case ..<(2 * 24 * 60): return "Dia"
+        case ..<(8 * 24 * 60): return "Semana"
+        default: return "Mês"
+        }
+    }
+
+    func num(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
+
+    /// API: {"rate_limit":{"primary_window":{"used_percent","limit_window_seconds","reset_at"},"secondary_window":...}}
+    func rows(fromAPI json: [String: Any]) -> [UsageRow]? {
+        guard let rl = json["rate_limit"] as? [String: Any] else { return nil }
+        let rows = ["primary_window", "secondary_window"].compactMap { key -> UsageRow? in
+            guard let w = rl[key] as? [String: Any], let used = num(w["used_percent"]) else { return nil }
+            let reset = num(w["reset_at"]).map { Date(timeIntervalSince1970: $0) }
+                ?? num(w["reset_after_seconds"]).map { Date().addingTimeInterval($0) }
+            return UsageRow(section: nil, label: windowLabel(minutes: num(w["limit_window_seconds"]).map { $0 / 60 }),
+                            usedPct: max(0, min(100, used)), resetsAt: reset)
+        }
+        return rows.isEmpty ? nil : rows
+    }
+
+    /// Session log: {"rate_limits":{"primary":{"used_percent","window_minutes","resets_at"},"secondary":...}}
+    func rowsFromSessions() -> [UsageRow]? {
+        let fm = FileManager.default
+        var dir = home.appendingPathComponent("sessions")
+        // sessions/YYYY/MM/DD/rollout-*.jsonl: walk down the newest folder at each level.
+        for _ in 0..<3 {
+            guard let next = (try? fm.contentsOfDirectory(atPath: dir.path))?.filter({ !$0.hasPrefix(".") }).max() else { return nil }
+            dir.appendPathComponent(next)
+        }
+        let files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
+            .filter { $0.pathExtension == "jsonl" }
+            .sorted {
+                let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return a > b
+            }
+        for file in files.prefix(5) {
+            guard let h = try? FileHandle(forReadingFrom: file) else { continue }
+            defer { try? h.close() }
+            let size = (try? h.seekToEnd()) ?? 0
+            try? h.seek(toOffset: size > 512_000 ? size - 512_000 : 0)
+            guard let data = try? h.readToEnd(), let text = String(data: data, encoding: .utf8) else { continue }
+            for line in text.split(separator: "\n").reversed() where line.contains("\"rate_limits\"") {
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                      let rl = ((obj["payload"] as? [String: Any])?["rate_limits"] ?? obj["rate_limits"]) as? [String: Any]
+                else { continue }
+                let rows = ["primary", "secondary"].compactMap { key -> UsageRow? in
+                    guard let w = rl[key] as? [String: Any], let used = num(w["used_percent"]) else { return nil }
+                    let reset = num(w["resets_at"]).map { Date(timeIntervalSince1970: $0) }
+                    if let reset, reset < Date() { // that window already reset
+                        return UsageRow(section: nil, label: windowLabel(minutes: num(w["window_minutes"])), usedPct: 0, resetsAt: nil)
+                    }
+                    return UsageRow(section: nil, label: windowLabel(minutes: num(w["window_minutes"])),
+                                    usedPct: max(0, min(100, used)), resetsAt: reset)
+                }
+                if !rows.isEmpty { return rows }
+            }
+        }
+        return nil
+    }
+
+    func fetch() async throws -> [UsageRow] {
+        let auth = try readAuth()
+        var req = URLRequest(url: URL(string: "https://chatgpt.com/backend-api/wham/usage")!)
+        req.setValue("Bearer \(auth.token)", forHTTPHeaderField: "Authorization")
+        if let account = auth.account { req.setValue(account, forHTTPHeaderField: "ChatGPT-Account-Id") }
+        req.setValue("codex_cli_rs", forHTTPHeaderField: "originator")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 20
+        do {
+            let json = try await performJSON(req)
+            if let rows = rows(fromAPI: json) { return rows }
+            if let rows = rowsFromSessions() { return rows }
+            throw FetchError.badResponse
+        } catch FetchError.http(let code) {
+            if let rows = rowsFromSessions() { return rows }
+            throw FetchError.http(code)
+        } catch FetchError.badResponse {
+            if let rows = rowsFromSessions() { return rows }
+            throw FetchError.badResponse
+        }
+    }
+
+    func headline(_ rows: [UsageRow]) -> Double? {
+        (rows.first { $0.label.hasPrefix("Sessão") } ?? rows.first)?.usedPct
+    }
+}

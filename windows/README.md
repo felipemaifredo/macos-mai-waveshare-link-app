@@ -40,7 +40,7 @@ Na primeira conexão, a placa mostra um código de 6 dígitos e o PC abre uma ja
 | Mixer | Volume geral, volume do player do Tocando, microfone, troca da saída de áudio |
 | Apps | Mesmo que Atalhos, botões próprios |
 | Docker | `docker ps -a` (precisa do Docker no PATH) |
-| Uso | Claude (token do Claude Code em `%USERPROFILE%\.claude\.credentials.json`) e Antigravity (API local, `%USERPROFILE%\.gemini\antigravity\daemon\hub_*.json`). Por causa do limite das APIs: busca automática no máximo a cada 5 min (trocar de aba ou de computador não zera a contagem) e o botão ↻ no máximo 1x por minuto |
+| Uso | Claude (token do Claude Code em `%USERPROFILE%\.claude\.credentials.json`), Codex (login do Codex em `%USERPROFILE%\.codex\auth.json`) e Antigravity (API local, `%USERPROFILE%\.gemini\antigravity\daemon\hub_*.json`). Por causa do limite das APIs: busca automática no máximo a cada 5 min (trocar de aba ou de computador não zera a contagem) e o botão ↻ no máximo 1x por minuto |
 
 Ainda não: **Discord**. Selos MIC e câmera vêm do registro de privacidade do Windows.
 

@@ -6,7 +6,7 @@ using System.Text.Json.Nodes;
 
 namespace WaveshareLink.Feeds;
 
-/// "Uso": Claude and Antigravity usage, the same sources as the Mac app (UsageProviders.swift).
+/// "Uso": Claude, Codex and Antigravity usage, the same sources as the Mac app (UsageProviders.swift).
 /// Fetched while this PC is on the board's screen with the page enabled. The APIs are rate limited, so:
 ///   - automatic fetches happen at most every 5 min, counted from the last fetch: switching pages or
 ///     computers does not restart the count (coming back early just resends what we have);
@@ -18,7 +18,7 @@ sealed class UsageFeed
     static readonly TimeSpan ManualInterval = TimeSpan.FromMinutes(1);
 
     public Action? OnChange;
-    readonly Entry[] entries = [new(new ClaudeProvider()), new(new AntigravityProvider())];
+    readonly Entry[] entries = [new(new ClaudeProvider()), new(new CodexProvider()), new(new AntigravityProvider())];
     // Checks whether the 5 min are up; the deadline itself comes from lastFetch.
     readonly System.Windows.Forms.Timer timer = new() { Interval = 15_000 };
     DateTime lastFetch = DateTime.MinValue;
@@ -78,9 +78,9 @@ sealed class UsageFeed
             if (x.Kind == UsageError.NotRunning) e.Rows = [];
             e.Error = x.Kind switch
             {
-                UsageError.NotRunning => "Antigravity não está aberto",
+                UsageError.NotRunning => e.Provider.NoCredentialsMessage,
                 UsageError.Expired => e.Provider.ExpiredMessage,
-                UsageError.NoCredentials => "Credenciais do Claude Code não encontradas",
+                UsageError.NoCredentials => e.Provider.NoCredentialsMessage,
                 UsageError.Http => $"Erro HTTP {x.Status}",
                 UsageError.Network => $"Sem conexão: {x.Message}",
                 _ => "Resposta inesperada da API",
@@ -150,6 +150,7 @@ interface IUsageProvider
 {
     string Name { get; }
     string ExpiredMessage { get; }
+    string NoCredentialsMessage { get; }
     Task<List<UsageRow>> FetchAsync();
     double? Headline(List<UsageRow> rows);
 }
@@ -199,6 +200,7 @@ sealed class ClaudeProvider : IUsageProvider
 {
     public string Name => "Claude";
     public string ExpiredMessage => "Login expirado: abra o Claude Code para renovar";
+    public string NoCredentialsMessage => "Credenciais do Claude Code não encontradas";
 
     static readonly string[] Order = ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"];
 
@@ -258,6 +260,7 @@ sealed class AntigravityProvider : IUsageProvider
 {
     public string Name => "Antigravity";
     public string ExpiredMessage => "Antigravity recusou o acesso: reabra o Antigravity";
+    public string NoCredentialsMessage => "Antigravity não está aberto";
 
     static (int Port, string Csrf) FindHub()
     {
@@ -341,4 +344,131 @@ sealed class AntigravityProvider : IUsageProvider
 
     public double? Headline(List<UsageRow> rows) =>
         (rows.FirstOrDefault(r => r.Label == "Sessão (5h)" || r.Label.Contains("5h")) ?? rows.FirstOrDefault())?.UsedPct;
+}
+
+/// Codex: the ChatGPT login of the Codex CLI / app (%USERPROFILE%\.codex\auth.json, or %CODEX_HOME%),
+/// asked to the ChatGPT backend like the CLI's /status. If that answer is not understood, falls back to
+/// the last "rate_limits" event Codex wrote in its session logs (.codex\sessions).
+sealed class CodexProvider : IUsageProvider
+{
+    public string Name => "Codex";
+    public string ExpiredMessage => "Login expirado: abra o Codex para renovar";
+    public string NoCredentialsMessage => "Login do Codex não encontrado";
+
+    static string Home =>
+        Environment.GetEnvironmentVariable("CODEX_HOME") is { Length: > 0 } h
+            ? h
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+
+    static (string Token, string? Account) ReadAuth()
+    {
+        JsonObject? tokens;
+        try
+        {
+            tokens = JsonNode.Parse(File.ReadAllText(Path.Combine(Home, "auth.json")))?["tokens"] as JsonObject;
+        }
+        catch (Exception)
+        {
+            throw new UsageException(UsageError.NoCredentials);
+        }
+        if (tokens == null || Json.Str(tokens, "access_token") is not { Length: > 0 } token) throw new UsageException(UsageError.NoCredentials);
+        return (token, Json.Str(tokens, "account_id"));
+    }
+
+    static string WindowLabel(double? minutes) => minutes switch
+    {
+        null or <= 0 => "Limite",
+        < 6 * 60 => $"Sessão ({(int)Math.Round(minutes.Value / 60)}h)",
+        < 2 * 24 * 60 => "Dia",
+        < 8 * 24 * 60 => "Semana",
+        _ => "Mês",
+    };
+
+    static DateTime? FromUnix(double? s) => s is double v ? DateTimeOffset.FromUnixTimeSeconds((long)v).UtcDateTime : null;
+
+    /// API: {"rate_limit":{"primary_window":{"used_percent","limit_window_seconds","reset_at"},"secondary_window":...}}
+    static List<UsageRow>? RowsFromApi(JsonObject json)
+    {
+        if (json["rate_limit"] is not JsonObject rl) return null;
+        var rows = new List<UsageRow>();
+        foreach (var key in new[] { "primary_window", "secondary_window" })
+        {
+            if (rl[key] is not JsonObject w || UsageHttp.Number(w["used_percent"]) is not double used) continue;
+            var reset = FromUnix(UsageHttp.Number(w["reset_at"]))
+                        ?? (UsageHttp.Number(w["reset_after_seconds"]) is double after ? DateTime.UtcNow.AddSeconds(after) : null);
+            rows.Add(new UsageRow(null, WindowLabel(UsageHttp.Number(w["limit_window_seconds"]) / 60), Math.Clamp(used, 0, 100), reset));
+        }
+        return rows.Count > 0 ? rows : null;
+    }
+
+    /// Session log: {"payload":{"rate_limits":{"primary":{"used_percent","window_minutes","resets_at"},"secondary":...}}}
+    static List<UsageRow>? RowsFromSessions()
+    {
+        var dir = Path.Combine(Home, "sessions");
+        if (!Directory.Exists(dir)) return null;
+        var files = new DirectoryInfo(dir).EnumerateFiles("*.jsonl", SearchOption.AllDirectories)
+            .OrderByDescending(f => f.LastWriteTimeUtc).Take(5);
+        foreach (var file in files)
+        {
+            string text;
+            try
+            {
+                using var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                fs.Seek(Math.Max(0, fs.Length - 512_000), SeekOrigin.Begin);
+                text = new StreamReader(fs, Encoding.UTF8).ReadToEnd();
+            }
+            catch (IOException)
+            {
+                continue;
+            }
+            foreach (var line in text.Split('\n').Reverse())
+            {
+                if (!line.Contains("\"rate_limits\"")) continue;
+                JsonObject? rl;
+                try
+                {
+                    var obj = JsonNode.Parse(line);
+                    rl = (obj?["payload"]?["rate_limits"] ?? obj?["rate_limits"]) as JsonObject;
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    continue; // the cut first line
+                }
+                if (rl == null) continue;
+                var rows = new List<UsageRow>();
+                foreach (var key in new[] { "primary", "secondary" })
+                {
+                    if (rl[key] is not JsonObject w || UsageHttp.Number(w["used_percent"]) is not double used) continue;
+                    var label = WindowLabel(UsageHttp.Number(w["window_minutes"]));
+                    var reset = FromUnix(UsageHttp.Number(w["resets_at"]));
+                    rows.Add(reset < DateTime.UtcNow
+                        ? new UsageRow(null, label, 0, null) // that window already reset
+                        : new UsageRow(null, label, Math.Clamp(used, 0, 100), reset));
+                }
+                if (rows.Count > 0) return rows;
+            }
+        }
+        return null;
+    }
+
+    public async Task<List<UsageRow>> FetchAsync()
+    {
+        var auth = ReadAuth();
+        using var req = new HttpRequestMessage(HttpMethod.Get, "https://chatgpt.com/backend-api/wham/usage");
+        req.Headers.Add("Authorization", $"Bearer {auth.Token}");
+        if (auth.Account != null) req.Headers.Add("ChatGPT-Account-Id", auth.Account);
+        req.Headers.Add("originator", "codex_cli_rs");
+        try
+        {
+            var json = await UsageHttp.SendAsync(req);
+            return RowsFromApi(json) ?? RowsFromSessions() ?? throw new UsageException(UsageError.BadResponse);
+        }
+        catch (UsageException e) when (e.Kind is UsageError.Http or UsageError.BadResponse)
+        {
+            return RowsFromSessions() ?? throw e;
+        }
+    }
+
+    public double? Headline(List<UsageRow> rows) =>
+        (rows.FirstOrDefault(r => r.Label.StartsWith("Sessão")) ?? rows.FirstOrDefault())?.UsedPct;
 }
