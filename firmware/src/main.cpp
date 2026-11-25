@@ -52,6 +52,7 @@ struct Host {
 Host hosts[MAX_HOSTS];
 int active = -1;              // the host on screen
 int listSlots[MAX_HOSTS];     // the host list shown by the UI → slots in `hosts`
+int pairedSlots[MAX_PAIRED];  // the offline-paired list shown by the UI → slots in `paired`
 int pairing = -1;             // the host being shown a pairing code
 char pairCode[7] = "";
 uint8_t pairTries = 0;
@@ -64,9 +65,17 @@ struct Paired {
     char hostId[40];
     char name[24];
     char token[33];
+    uint8_t mac[6];
+};
+struct LegacyPaired {
+    char hostId[40];
+    char name[24];
+    char token[33];
 };
 Paired paired[MAX_PAIRED];
 int pairedCount = 0;
+
+void publishHosts();
 
 // --- Crypto helpers -------------------------------------------------------------
 
@@ -99,7 +108,23 @@ void loadPaired() {
     for (int i = 0; i < pairedCount; i++) {
         char key[4];
         snprintf(key, sizeof(key), "h%d", i);
-        if (p.getBytes(key, &paired[i], sizeof(Paired)) != sizeof(Paired)) {
+        memset(&paired[i], 0, sizeof(Paired));
+        const size_t storedSize = p.getBytesLength(key);
+        if (storedSize == sizeof(Paired)) {
+            if (p.getBytes(key, &paired[i], sizeof(Paired)) != sizeof(Paired)) {
+                pairedCount = i;
+                break;
+            }
+        } else if (storedSize == sizeof(LegacyPaired)) {
+            LegacyPaired old = {};
+            if (p.getBytes(key, &old, sizeof(old)) != sizeof(old)) {
+                pairedCount = i;
+                break;
+            }
+            memcpy(paired[i].hostId, old.hostId, sizeof(old.hostId));
+            memcpy(paired[i].name, old.name, sizeof(old.name));
+            memcpy(paired[i].token, old.token, sizeof(old.token));
+        } else {
             pairedCount = i;
             break;
         }
@@ -120,7 +145,7 @@ void savePaired() {
     p.end();
 }
 
-const Paired* findPaired(const char* hostId) {
+Paired* findPaired(const char* hostId) {
     if (!*hostId) return nullptr;
     for (int i = 0; i < pairedCount; i++) {
         if (strcmp(paired[i].hostId, hostId) == 0) return &paired[i];
@@ -143,6 +168,7 @@ void storePaired(const Paired& p) {
     }
     paired[pairedCount++] = p;
     savePaired();
+    publishHosts();
 }
 
 // --- Sending ----------------------------------------------------------------------
@@ -233,6 +259,7 @@ const char* displayName(const Host& h) {
 
 void publishHosts() {
     UiHost list[MAX_HOSTS];
+    UiPaired offline[MAX_PAIRED];
     int n = 0, act = -1;
     for (int i = 0; i < MAX_HOSTS; i++) {
         if (!hosts[i].linked) continue;
@@ -242,6 +269,23 @@ void publishHosts() {
         n++;
     }
     uiSetHosts(list, n, act);
+
+    int offlineCount = 0;
+    for (int i = 0; i < pairedCount; i++) {
+        bool connected = false;
+        for (const Host& h : hosts) {
+            if (h.linked && *h.hostId && strcmp(h.hostId, paired[i].hostId) == 0) {
+                connected = true;
+                break;
+            }
+        }
+        if (connected) continue;
+        bool canWake = false;
+        for (uint8_t byte : paired[i].mac) canWake |= byte != 0;
+        offline[offlineCount] = {paired[i].name, canWake};
+        pairedSlots[offlineCount++] = i;
+    }
+    uiSetPaired(offline, offlineCount);
 }
 
 void activate(int i) {
@@ -310,7 +354,7 @@ void onAuth(int i, const JsonDocument& doc) {
     JsonDocument r;
     r["t"] = "auth";
     if (h.via == Via::wifi) {
-        const Paired* p = findPaired(hostId);
+        Paired* p = findPaired(hostId);
         char expected[65];
         if (p) hmacHex(p->token, "host:", h.nonce, expected);
         if (!p || !sameSecret(expected, doc["hmac"] | "")) {
@@ -321,6 +365,13 @@ void onAuth(int i, const JsonDocument& doc) {
         char proof[65];
         hmacHex(p->token, "board:", doc["nonce"] | "", proof);
         r["hmac"] = proof;
+
+        uint8_t mac[6];
+        if (netFindMac(h.client.remoteIP(), mac) && memcmp(p->mac, mac, sizeof(mac)) != 0) {
+            memcpy(p->mac, mac, sizeof(mac));
+            savePaired();
+            publishHosts();
+        }
     }
     r["ok"] = true;
     r["id"] = netBoardId();
@@ -387,6 +438,7 @@ void onPair(int i, const JsonDocument& doc) {
     snprintf(p.hostId, sizeof(p.hostId), "%s", h.hostId);
     snprintf(p.name, sizeof(p.name), "%s", h.name);
     randomHex(p.token, 16);
+    netFindMac(h.client.remoteIP(), p.mac);
     storePaired(p);
     endPairing();
 
@@ -526,6 +578,13 @@ void onHostSelected(int index) {
     if (slot >= 0 && slot < MAX_HOSTS && hosts[slot].linked) activate(slot);
 }
 
+bool onWake(int index) {
+    if (index < 0 || index >= pairedCount) return false;
+    const int slot = pairedSlots[index];
+    if (slot < 0 || slot >= pairedCount) return false;
+    return netWake(paired[slot].mac);
+}
+
 void onPairCancel() {
     if (pairing < 0) return;
     sendTo(hosts[pairing], "{\"t\":\"pair\",\"state\":\"cancelled\"}");
@@ -538,6 +597,7 @@ void onForgetHosts() {
     for (int i = USB_HOSTS; i < MAX_HOSTS; i++) {
         if (hosts[i].open) drop(i);
     }
+    publishHosts();
 }
 
 } // namespace
@@ -583,7 +643,8 @@ void setup() {
     netBegin();
     displayBegin();
     uiBegin(pressToActive, pageToActive);
-    uiSetHostHandlers(onHostSelected, onPairCancel, onForgetHosts);
+    uiSetHostHandlers(onHostSelected, onWake, onPairCancel, onForgetHosts);
+    publishHosts();
     updateNetText();
     bootDone = millis();
     if (!touchFound()) {

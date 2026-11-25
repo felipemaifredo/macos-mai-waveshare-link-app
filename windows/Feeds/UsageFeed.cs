@@ -332,18 +332,21 @@ sealed class AntigravityProvider : IUsageProvider
         {
             var section = Json.Str(g, "displayName");
             if (g["buckets"] is not JsonArray buckets) continue;
+            var sectionRows = new List<UsageRow>();
             foreach (var b in buckets.OfType<JsonObject>())
             {
                 if (UsageHttp.Number(b["remainingFraction"]) is not double remaining) continue;
-                rows.Add(new UsageRow(section, WindowLabel(Json.Str(b, "window")),
+                sectionRows.Add(new UsageRow(section, WindowLabel(Json.Str(b, "window")),
                     Math.Clamp((1 - remaining) * 100, 0, 100), UsageHttp.ParseDate(Json.Str(b, "resetTime"))));
             }
+            rows.AddRange(sectionRows.OrderBy(r => r.Label == "Sessão (5h)" || r.Label.Contains("5h") ? 0
+                : r.Label == "Semana" ? 1 : 2));
         }
         return rows;
     }
 
     public double? Headline(List<UsageRow> rows) =>
-        (rows.FirstOrDefault(r => r.Label == "Sessão (5h)" || r.Label.Contains("5h")) ?? rows.FirstOrDefault())?.UsedPct;
+        (rows.FirstOrDefault(r => r.Label == "Semana") ?? rows.FirstOrDefault())?.UsedPct;
 }
 
 /// Codex: the ChatGPT login of the Codex CLI / app (%USERPROFILE%\.codex\auth.json, or %CODEX_HOME%),

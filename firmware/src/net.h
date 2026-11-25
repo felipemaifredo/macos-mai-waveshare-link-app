@@ -17,6 +17,10 @@ void netLoop();
 void netConfigure(const char* ssid, const char* pass);
 // A host that just connected, or an invalid client.
 WiFiClient netAccept();
+// Looks up an IPv4 peer in lwIP's ARP table. The peer must have communicated recently.
+bool netFindMac(IPAddress ip, uint8_t mac[6]);
+// Sends a Wake-on-LAN magic packet to both the subnet and limited broadcasts.
+bool netWake(const uint8_t mac[6]);
 
 NetState netState();
 const char* netSsid();

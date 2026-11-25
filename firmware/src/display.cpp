@@ -113,6 +113,7 @@ void panelBegin() {
     // 12.5 MHz (~30 fps: 824 x 496 clocks per frame) instead of the demo's 16 (~39 fps). The panel
     // streams its frame from PSRAM, and with Wi-Fi on (its buffers live in PSRAM) 16 MHz left too
     // little PSRAM bandwidth: lines glitched now and then. 30 fps is plenty for this UI.
+    // Do not go lower: at 10 MHz the panel lost sync and flashed solid colors.
     c.timings.pclk_hz = 12500 * 1000;
     c.timings.h_res = W;
     c.timings.v_res = H;

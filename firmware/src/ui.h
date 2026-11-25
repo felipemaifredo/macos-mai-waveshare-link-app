@@ -29,12 +29,20 @@ struct UiHost {
     const char* name;
     bool wifi; // false: USB
 };
+struct UiPaired {
+    const char* name;
+    bool canWake;
+};
 using HostSelectHandler = void (*)(int index); // index into the last uiSetHosts list
+using WakeHandler = bool (*)(int index);       // index into the last uiSetPaired list
 using VoidHandler = void (*)();
-void uiSetHostHandlers(HostSelectHandler onSelect, VoidHandler onPairCancel, VoidHandler onForgetHosts);
+void uiSetHostHandlers(HostSelectHandler onSelect, WakeHandler onWake, VoidHandler onPairCancel,
+                       VoidHandler onForgetHosts);
 // The connected hosts and which one is on screen (-1: none). The chip in the header shows the
 // active one; tapping it lists all of them so the user can switch.
 void uiSetHosts(const UiHost* hosts, int count, int active);
+// Paired computers that are currently offline. Entries without a discovered MAC cannot wake yet.
+void uiSetPaired(const UiPaired* paired, int count);
 // One line about the network for the host list, e.g. "Wi-Fi: Casa  192.168.0.20".
 void uiSetNet(const char* text);
 // The full-screen clock shown while no computer is connected.

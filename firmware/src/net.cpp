@@ -2,6 +2,14 @@
 
 #include <ESPmDNS.h>
 #include <Preferences.h>
+#include <WiFiUdp.h>
+
+extern "C" {
+#include <esp_netif.h>
+#include <lwip/etharp.h>
+#include <lwip/netif.h>
+#include <lwip/tcpip.h>
+}
 
 namespace {
 
@@ -20,6 +28,31 @@ WiFiServer server(NET_PORT, 4);
 // Why the last attempt failed (WIFI_REASON_*), set from the Wi-Fi task. 0: none yet.
 volatile uint8_t lastReason = 0;
 volatile bool reasonChanged = false;
+
+struct MacLookup {
+    uint32_t ip;
+    uint8_t mac[6];
+    bool found;
+};
+
+void findMacOnTcpipCore(void* arg) {
+    MacLookup& lookup = *static_cast<MacLookup*>(arg);
+    esp_netif_t* espNetif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!espNetif) return;
+    const int index = esp_netif_get_netif_impl_index(espNetif);
+    if (index < 0) return;
+    netif* iface = netif_get_by_index(index);
+    if (!iface) return;
+
+    ip4_addr_t ip = {};
+    ip.addr = lookup.ip;
+    eth_addr* eth = nullptr;
+    const ip4_addr_t* foundIp = nullptr;
+    if (etharp_find_addr(iface, &ip, &eth, &foundIp) >= 0 && eth) {
+        memcpy(lookup.mac, eth->addr, sizeof(lookup.mac));
+        lookup.found = true;
+    }
+}
 
 void loadCredentials() {
     Preferences p;
@@ -134,6 +167,41 @@ void netConfigure(const char* newSsid, const char* newPass) {
 WiFiClient netAccept() {
     if (!serverUp || !WiFi.isConnected()) return WiFiClient();
     return server.accept();
+}
+
+bool netFindMac(IPAddress ip, uint8_t mac[6]) {
+    if (!mac || ip.type() != IPv4 || !WiFi.isConnected()) return false;
+    MacLookup lookup = {(uint32_t)ip, {}, false};
+#if CONFIG_LWIP_TCPIP_CORE_LOCKING
+    LOCK_TCPIP_CORE();
+    findMacOnTcpipCore(&lookup);
+    UNLOCK_TCPIP_CORE();
+#else
+    if (tcpip_callback_wait(findMacOnTcpipCore, &lookup) != ERR_OK) return false;
+#endif
+    if (lookup.found) memcpy(mac, lookup.mac, sizeof(lookup.mac));
+    return lookup.found;
+}
+
+bool netWake(const uint8_t mac[6]) {
+    if (!mac || !WiFi.isConnected()) return false;
+    uint8_t packet[102];
+    memset(packet, 0xff, 6);
+    for (int i = 0; i < 16; i++) memcpy(packet + 6 + i * 6, mac, 6);
+
+    WiFiUDP udp;
+    const IPAddress destinations[] = {WiFi.broadcastIP(), IPAddress(255, 255, 255, 255)};
+    bool sent = false;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        for (const IPAddress& destination : destinations) {
+            if (!udp.beginPacket(destination, 9)) continue;
+            udp.write(packet, sizeof(packet));
+            sent |= udp.endPacket() == 1;
+        }
+        delay(20);
+    }
+    udp.stop();
+    return sent;
 }
 
 NetState netState() { return state; }

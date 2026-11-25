@@ -1,8 +1,8 @@
 # Plano: computadores pareados no popup e Wake-on-LAN
 
-> Status: **só planejado, nada implementado.** Criado em 2026-11-21.
+> Status: **implementado em 2026-11-25.** Build do firmware validado; testes na placa e de Wake-on-LAN real ainda dependem do hardware.
 >
-> Decisão por enquanto: ligar os PCs pela função de Wake-on-LAN do roteador. A etapa 1 (listar os pareados offline) é pequena e pode ser feita sozinha; as etapas 2 e 3 ficam para quando valer a pena ter o botão de ligar na placa.
+> A placa agora lista os pareados offline, aprende o MAC quando eles se conectam por Wi-Fi e envia Wake-on-LAN diretamente pelo botão da lista.
 
 ## Problema
 

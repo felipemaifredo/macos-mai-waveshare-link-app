@@ -215,19 +215,29 @@ struct AntigravityProvider: UsageProvider {
         var rows: [UsageRow] = []
         for g in groups {
             let section = g["displayName"] as? String
+            var sectionRows: [UsageRow] = []
             for b in (g["buckets"] as? [[String: Any]]) ?? [] {
                 guard let remaining = (b["remainingFraction"] as? NSNumber)?.doubleValue else { continue }
-                rows.append(UsageRow(section: section,
-                                     label: windowLabel(b["window"] as? String),
-                                     usedPct: max(0, min(100, (1 - remaining) * 100)),
-                                     resetsAt: parseDate(b["resetTime"] as? String)))
+                sectionRows.append(UsageRow(section: section,
+                                            label: windowLabel(b["window"] as? String),
+                                            usedPct: max(0, min(100, (1 - remaining) * 100)),
+                                            resetsAt: parseDate(b["resetTime"] as? String)))
             }
+            // Keep the detailed session limit directly above the weekly limit.
+            sectionRows.sort { rowOrder($0) < rowOrder($1) }
+            rows.append(contentsOf: sectionRows)
         }
         return rows
     }
 
+    private func rowOrder(_ row: UsageRow) -> Int {
+        if row.label == "Sessão (5h)" || row.label.contains("5h") { return 0 }
+        if row.label == "Semana" { return 1 }
+        return 2
+    }
+
     func headline(_ rows: [UsageRow]) -> Double? {
-        (rows.first { $0.label == "Sessão (5h)" || $0.label.contains("5h") } ?? rows.first)?.usedPct
+        (rows.first { $0.label == "Semana" } ?? rows.first)?.usedPct
     }
 }
 

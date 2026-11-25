@@ -438,15 +438,23 @@ lv_obj_t* badge(lv_obj_t* parent, const char* text, lv_color_t color) {
 // --- Hosts: the chip in the header, the list to switch hosts, the pairing code ----------
 
 constexpr int MAX_UI_HOSTS = 6;
+constexpr int MAX_UI_PAIRED = 4;
 struct HostEntry {
     char name[24];
     bool wifi;
 };
+struct PairedEntry {
+    char name[24];
+    bool canWake;
+};
 HostEntry hostList[MAX_UI_HOSTS];
 int hostCount = 0;
 int hostActive = -1;
+PairedEntry pairedList[MAX_UI_PAIRED];
+int pairedCount = 0;
 char netText[128] = "Wi-Fi: desligado";
 HostSelectHandler hostSelectHandler = nullptr;
+WakeHandler wakeHandler = nullptr;
 VoidHandler pairCancelHandler = nullptr;
 VoidHandler forgetHostsHandler = nullptr;
 lv_obj_t* hostPopup = nullptr; // the backdrop on the top layer while the list is open
@@ -454,6 +462,9 @@ lv_obj_t* hostPopupList = nullptr;
 lv_obj_t* hostPopupNet = nullptr;
 lv_obj_t* forgetLabel = nullptr;
 bool forgetArmed = false;
+int wakeFeedback = 0; // -1: failed, 0: none, 1: sent
+int wakeFeedbackIndex = -1;
+lv_timer_t* wakeFeedbackTimer = nullptr;
 lv_obj_t* pairOverlay = nullptr;
 lv_obj_t* standby = nullptr; // full-screen clock while no computer is connected
 lv_obj_t* standbyStatus = nullptr;
@@ -516,16 +527,76 @@ void onHostPicked(lv_event_t* e) {
     if (hostSelectHandler) hostSelectHandler(i);
 }
 
+void fillHostPopup();
+
+void clearWakeFeedback(lv_timer_t*) {
+    wakeFeedback = 0;
+    wakeFeedbackIndex = -1;
+    wakeFeedbackTimer = nullptr;
+    fillHostPopup();
+}
+
+void onWakePicked(lv_event_t* e) {
+    const int index = (int)(intptr_t)lv_event_get_user_data(e);
+    wakeFeedbackIndex = index;
+    wakeFeedback = wakeHandler && wakeHandler(index) ? 1 : -1;
+    lv_obj_t* row = lv_event_get_target_obj(e);
+    lv_obj_t* text = lv_obj_get_child(row, 1);
+    lv_obj_t* status = text ? lv_obj_get_child(text, 1) : nullptr;
+    if (status) lv_label_set_text(status, wakeFeedback > 0 ? "Sinal enviado..." : "Nao foi possivel enviar");
+    if (wakeFeedbackTimer) lv_timer_delete(wakeFeedbackTimer);
+    wakeFeedbackTimer = lv_timer_create(clearWakeFeedback, 3000, nullptr);
+    lv_timer_set_repeat_count(wakeFeedbackTimer, 1);
+}
+
+lv_obj_t* pairedRow(lv_obj_t* parent, int index) {
+    const PairedEntry& entry = pairedList[index];
+    lv_obj_t* row = lv_button_create(parent);
+    lv_obj_set_size(row, LV_PCT(100), 62);
+    lv_obj_set_style_radius(row, 12, 0);
+    lv_obj_set_style_shadow_width(row, 0, 0);
+    lv_obj_set_style_bg_color(row, TRACK, 0);
+    lv_obj_set_style_bg_color(row, PRESSED, LV_STATE_PRESSED);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_hor(row, 16, 0);
+    lv_obj_set_style_pad_column(row, 14, 0);
+    label(row, &lv_font_montserrat_20, entry.canWake ? TEXT : DIM, LV_SYMBOL_POWER);
+
+    lv_obj_t* text = box(row, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_width(text, 0);
+    lv_obj_set_flex_grow(text, 1);
+    lv_obj_set_style_pad_row(text, 2, 0);
+    lv_obj_t* name = label(text, &lv_font_montserrat_16, DIM, entry.name);
+    lv_obj_set_width(name, LV_PCT(100));
+    lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
+    const char* hint = entry.canWake ? "Toque para ligar" : "Conecte uma vez pelo Wi-Fi para habilitar";
+    if (index == wakeFeedbackIndex) hint = wakeFeedback > 0 ? "Sinal enviado..." : "Nao foi possivel enviar";
+    lv_obj_t* status = label(text, &lv_font_montserrat_16, entry.canWake ? TEXT : DIM, hint);
+    lv_obj_set_width(status, LV_PCT(100));
+    lv_label_set_long_mode(status, LV_LABEL_LONG_MODE_DOTS);
+    if (entry.canWake) lv_obj_add_event_cb(row, onWakePicked, LV_EVENT_CLICKED, (void*)(intptr_t)index);
+    else lv_obj_add_state(row, LV_STATE_DISABLED);
+    return row;
+}
+
 void fillHostPopup() {
     if (!hostPopupList) return;
     lv_obj_clean(hostPopupList);
-    if (hostCount == 0) label(hostPopupList, &lv_font_montserrat_20, DIM, "Nenhum computador conectado");
+    if (hostCount == 0 && pairedCount == 0) {
+        label(hostPopupList, &lv_font_montserrat_20, DIM, "Nenhum computador conectado");
+    }
     for (int i = 0; i < hostCount; i++) {
         const bool on = i == hostActive;
         lv_obj_t* b = rowButton(hostPopupList, hostList[i].wifi ? LV_SYMBOL_WIFI : LV_SYMBOL_USB, hostList[i].name,
                                 on ? lv_color_hex(0x33363E) : TRACK, 54);
         if (on) label(b, &lv_font_montserrat_20, GOOD, LV_SYMBOL_OK);
         lv_obj_add_event_cb(b, onHostPicked, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+    }
+    if (pairedCount > 0) {
+        lv_obj_t* heading = label(hostPopupList, &lv_font_montserrat_16, DIM, "Pareados (offline)");
+        lv_obj_set_style_pad_top(heading, hostCount > 0 ? 8 : 0, 0);
+        for (int i = 0; i < pairedCount; i++) pairedRow(hostPopupList, i);
     }
     lv_label_set_text(hostPopupNet, netText);
 }
@@ -548,9 +619,14 @@ void openHostPopup(lv_event_t*) {
     }, LV_EVENT_CLICKED, nullptr);
 
     lv_obj_t* c = dialog(hostPopup, 480);
+    lv_obj_set_height(c, 440);
     label(c, &lv_font_montserrat_28, TEXT, "Computadores");
-    label(c, &lv_font_montserrat_16, DIM, "Toque num computador para mostrar os dados dele.");
+    label(c, &lv_font_montserrat_16, DIM, "Escolha um conectado ou ligue um pareado.");
     hostPopupList = box(c, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_height(hostPopupList, 210);
+    lv_obj_add_flag(hostPopupList, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(hostPopupList, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(hostPopupList, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_style_pad_row(hostPopupList, 8, 0);
     hostPopupNet = label(c, &lv_font_montserrat_16, DIM, "");
     lv_obj_set_width(hostPopupNet, LV_PCT(100));
@@ -1047,10 +1123,27 @@ void uiShowLayout(JsonObjectConst msg) {
     }
 }
 
-void uiSetHostHandlers(HostSelectHandler onSelect, VoidHandler onPairCancel, VoidHandler onForgetHosts) {
+void uiSetHostHandlers(HostSelectHandler onSelect, WakeHandler onWake, VoidHandler onPairCancel,
+                       VoidHandler onForgetHosts) {
     hostSelectHandler = onSelect;
+    wakeHandler = onWake;
     pairCancelHandler = onPairCancel;
     forgetHostsHandler = onForgetHosts;
+}
+
+void uiSetPaired(const UiPaired* paired, int count) {
+    if (wakeFeedbackTimer) {
+        lv_timer_delete(wakeFeedbackTimer);
+        wakeFeedbackTimer = nullptr;
+    }
+    wakeFeedback = 0;
+    wakeFeedbackIndex = -1;
+    pairedCount = count < MAX_UI_PAIRED ? count : MAX_UI_PAIRED;
+    for (int i = 0; i < pairedCount; i++) {
+        snprintf(pairedList[i].name, sizeof(pairedList[i].name), "%s", paired[i].name);
+        pairedList[i].canWake = paired[i].canWake;
+    }
+    fillHostPopup();
 }
 
 void uiSetHosts(const UiHost* hosts, int count, int active) {
